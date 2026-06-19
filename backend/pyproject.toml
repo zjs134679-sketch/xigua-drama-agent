@@ -1,0 +1,13 @@
+[project]
+name = "xigua-drama-agent-backend"
+version = "0.1.0"
+description = "西瓜短剧Agent（国内版）后端引擎 — FastAPI"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

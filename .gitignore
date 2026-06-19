@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Rust / Tauri
+src-tauri/target/
+
+# 数据 / 密钥
+backend/data/*.db
+backend/data/*.sqlite*
+backend/data/oss/
+auth-server/*.db
+# 真实词库（云端加密下发）严禁入仓
+backend/dict/*.local.txt
+*.log
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
