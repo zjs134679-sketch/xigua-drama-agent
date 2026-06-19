@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.compliance import router as compliance_router
 from app.api.compute import router as compute_router
 from app.api.health import router as health_router
+from app.api.projects import router as projects_router
+from app.api.script import router as script_router
 from app.core.config import settings
 from app.core.db import init_db
 from app.core.logging import logger, setup_logging
@@ -37,6 +39,8 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(compliance_router)
 app.include_router(compute_router)
+app.include_router(projects_router)
+app.include_router(script_router)
 
 
 @app.get("/")

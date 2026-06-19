@@ -43,3 +43,5 @@ input:focus, textarea:focus { border-color: var(--blue); }
   padding: 7px 10px; font-weight: 500; font-size: 12px; width: 100%;
 }
 .pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 3px 8px; border-radius: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }
