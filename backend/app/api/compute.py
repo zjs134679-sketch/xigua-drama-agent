@@ -86,3 +86,82 @@ async def text2image(req: Text2ImageRequest, db: Session = Depends(get_db)):
             "meta": res.meta,
         },
     )
+
+
+# ── 算力节点 CRUD ────────────────────────────────────────────────────────────
+
+from app.schemas.compute import ComputeNodeCreate, ComputeNodeUpdate  # noqa: E402
+from app.services.compute.registry import build_node  # noqa: E402
+
+
+@router.post('/nodes', tags=['nodes'])
+def create_node(body: ComputeNodeCreate, db: Session = Depends(get_db)):
+    row = ComputeNodeRow(
+        name=body.name,
+        type=body.type,
+        base_url=body.base_url,
+        token=body.token,
+        priority=body.priority,
+        is_active=body.is_active,
+        capabilities=body.capabilities,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        'id': row.id,
+        'name': row.name,
+        'type': row.type,
+        'base_url': row.base_url,
+        'token': row.token,
+        'priority': row.priority,
+        'is_active': row.is_active,
+        'capabilities': row.capabilities,
+        'last_status': row.last_status,
+        'created_at': str(row.created_at),
+    }
+
+
+@router.put('/nodes/{node_id}', tags=['nodes'])
+def update_node(node_id: int, body: ComputeNodeUpdate, db: Session = Depends(get_db)):
+    row = db.query(ComputeNodeRow).filter(ComputeNodeRow.id == node_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail='Node not found')
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(row, field, value)
+    db.commit()
+    db.refresh(row)
+    return {
+        'id': row.id,
+        'name': row.name,
+        'type': row.type,
+        'base_url': row.base_url,
+        'token': row.token,
+        'priority': row.priority,
+        'is_active': row.is_active,
+        'capabilities': row.capabilities,
+        'last_status': row.last_status,
+        'updated_at': str(row.updated_at),
+    }
+
+
+@router.delete('/nodes/{node_id}', tags=['nodes'])
+def delete_node(node_id: int, db: Session = Depends(get_db)):
+    row = db.query(ComputeNodeRow).filter(ComputeNodeRow.id == node_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail='Node not found')
+    db.delete(row)
+    db.commit()
+    return {'deleted': True}
+
+
+@router.post('/nodes/{node_id}/test', tags=['nodes'])
+async def test_node(node_id: int, db: Session = Depends(get_db)):
+    row = db.query(ComputeNodeRow).filter(ComputeNodeRow.id == node_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail='Node not found')
+    node = build_node(row)
+    online = await node.health()
+    row.last_status = 'online' if online else 'offline'
+    db.commit()
+    return {'id': node_id, 'online': online, 'type': row.type, 'base_url': row.base_url}

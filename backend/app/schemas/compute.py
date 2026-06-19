@@ -12,3 +12,23 @@ class Text2ImageRequest(BaseModel):
     seed: int | None = None
     workflow: str = "flux-t2i.api.json"
     username: str | None = None  # 临时：auth 接入前用于本地三振计数
+
+
+class ComputeNodeCreate(BaseModel):
+    name: str
+    type: str
+    base_url: str
+    token: str | None = None
+    priority: int = 100
+    is_active: bool = True
+    capabilities: str | None = None
+
+
+class ComputeNodeUpdate(BaseModel):
+    name: str | None = None
+    type: str | None = None
+    base_url: str | None = None
+    token: str | None = None
+    priority: int | None = None
+    is_active: bool | None = None
+    capabilities: str | None = None
