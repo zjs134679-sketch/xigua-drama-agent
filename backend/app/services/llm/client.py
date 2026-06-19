@@ -44,10 +44,13 @@ def chat(
     model: str,
     temperature: float = 0.7,
     timeout: float = 120.0,
+    response_format: dict | None = None,
 ) -> str:
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {"model": model, "messages": messages, "temperature": temperature}
+    if response_format:
+        body["response_format"] = response_format
     with httpx.Client(timeout=timeout) as c:
         r = c.post(url, json=body, headers=headers)
         r.raise_for_status()

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.compliance import router as compliance_router
 from app.api.compute import router as compute_router
 from app.api.health import router as health_router
+from app.api.extract import router as extract_router
 from app.api.projects import router as projects_router
 from app.api.script import router as script_router
 from app.core.config import settings
@@ -41,6 +42,7 @@ app.include_router(compliance_router)
 app.include_router(compute_router)
 app.include_router(projects_router)
 app.include_router(script_router)
+app.include_router(extract_router)
 
 
 @app.get("/")

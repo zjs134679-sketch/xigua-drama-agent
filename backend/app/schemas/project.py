@@ -24,3 +24,7 @@ class ScriptGenerateRequest(BaseModel):
 class ScriptDraftRequest(BaseModel):
     content: str  # 小说原文（快速试写，不落库）
     temperature: float = 0.7
+
+
+class ExtractRequest(BaseModel):
+    episode_id: int

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.models.domain import Drama, Episode
+from app.models.domain import Character, Drama, Episode, Prop, Scene
 from app.schemas.project import DramaCreate, EpisodeCreate
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -94,3 +94,38 @@ def get_episode(episode_id: int, db: Session = Depends(get_db)) -> dict:
     if not e or e.deleted_at is not None:
         raise HTTPException(404, "分集不存在")
     return episode_view(e, with_content=True)
+
+
+@router.get("/{drama_id}/characters")
+def list_characters(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(
+        select(Character).where(Character.drama_id == drama_id, Character.deleted_at.is_(None)).order_by(Character.id)
+    ).all()
+    return [
+        {"id": c.id, "name": c.name, "role": c.role, "appearance": c.appearance,
+         "personality": c.personality, "description": c.description, "image_url": c.image_url}
+        for c in rows
+    ]
+
+
+@router.get("/{drama_id}/scenes")
+def list_scenes(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(
+        select(Scene).where(Scene.drama_id == drama_id, Scene.deleted_at.is_(None)).order_by(Scene.id)
+    ).all()
+    return [
+        {"id": s.id, "location": s.location, "time": s.time, "prompt": s.prompt,
+         "status": s.status, "image_url": s.image_url}
+        for s in rows
+    ]
+
+
+@router.get("/{drama_id}/props")
+def list_props(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(
+        select(Prop).where(Prop.drama_id == drama_id, Prop.deleted_at.is_(None)).order_by(Prop.id)
+    ).all()
+    return [
+        {"id": p.id, "name": p.name, "type": p.type, "description": p.description, "prompt": p.prompt}
+        for p in rows
+    ]
