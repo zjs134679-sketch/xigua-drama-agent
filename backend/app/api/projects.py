@@ -6,9 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.user_state import ensure_active_user
 from app.core.db import get_db
 from app.models.domain import Character, Drama, Episode, Prop, Scene
-from app.schemas.project import DramaCreate, EpisodeCreate
+from app.schemas.project import DramaCreate, EpisodeCreate, NovelImportRequest
+from app.services.compliance import check, enforce
+from app.services.novel_split import split_novel
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -76,6 +79,63 @@ def create_episode(drama_id: int, body: EpisodeCreate, db: Session = Depends(get
     db.add(e)
     db.commit()
     return episode_view(e, with_content=True)
+
+
+@router.post("/{drama_id}/import-novel")
+def import_novel(drama_id: int, body: NovelImportRequest, db: Session = Depends(get_db)) -> dict:
+    """整篇小说 → 合规 → 自动分集（按章/按长度）→ 批量建分集。"""
+    ensure_active_user(db, body.username)
+    drama = db.get(Drama, drama_id)
+    if not drama:
+        raise HTTPException(404, "项目不存在")
+
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "请粘贴小说原文")
+
+    result = check(text)
+    if result.blocked:
+        audit = enforce.record_violation(db, body.username, result, "novel_import")
+        raise HTTPException(
+            status_code=451,
+            detail={
+                "blocked": True,
+                "level": "red",
+                "message": "小说原文触发红线，已拦截并记录",
+                "hits": [hit.__dict__ for hit in result.hits],
+                "violation_count": audit["violation_count"],
+                "banned": audit["banned"],
+            },
+        )
+
+    chapters = split_novel(text, body.max_chars)
+    if not chapters:
+        raise HTTPException(400, "未能从原文中切分出内容")
+
+    start = db.scalars(
+        select(Episode.episode_number)
+        .where(Episode.drama_id == drama_id)
+        .order_by(Episode.episode_number.desc())
+    ).first() or 0
+
+    created: list[Episode] = []
+    for offset, chapter in enumerate(chapters, start=1):
+        episode = Episode(
+            drama_id=drama_id,
+            episode_number=start + offset,
+            title=chapter["title"],
+            content=chapter["content"],
+        )
+        db.add(episode)
+        created.append(episode)
+    db.commit()
+
+    return {
+        "drama_id": drama_id,
+        "created": len(created),
+        "warn": result.warn,
+        "episodes": [episode_view(e) for e in created],
+    }
 
 
 @router.get("/{drama_id}/episodes")

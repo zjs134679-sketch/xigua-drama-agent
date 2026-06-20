@@ -16,6 +16,12 @@ class EpisodeCreate(BaseModel):
     content: str | None = None  # 小说原文
 
 
+class NovelImportRequest(BaseModel):
+    text: str                     # 整篇小说原文
+    max_chars: int = 2000         # 无章节标题时按长度兜底
+    username: str | None = None
+
+
 class ScriptGenerateRequest(BaseModel):
     episode_id: int
     temperature: float = 0.7

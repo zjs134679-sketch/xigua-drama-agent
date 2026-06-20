@@ -490,6 +490,32 @@ export function createEpisode(projectId: number, body: EpisodeInput): Promise<Ep
   });
 }
 
+export interface NovelImportResult {
+  status: number;
+  created?: number;
+  episodes?: EpisodeSummary[];
+  warn?: boolean;
+  level?: string;
+  message?: string;
+  hits?: ComplianceHit[];
+  banned?: boolean;
+}
+
+export async function importNovel(projectId: number, text: string, username = "local"): Promise<NovelImportResult> {
+  const r = await apiFetch(`/projects/${projectId}/import-novel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, username }),
+  });
+  const data = await r.json();
+  if (r.ok) return { status: r.status, created: data.created, episodes: data.episodes, warn: data.warn };
+  const detail = data.detail;
+  if (detail && typeof detail === "object") {
+    return { status: r.status, level: detail.level, message: detail.message, hits: detail.hits, banned: detail.banned };
+  }
+  return { status: r.status, message: typeof detail === "string" ? detail : "导入失败" };
+}
+
 export function getEpisode(episodeId: number): Promise<EpisodeDetail> {
   return jsonRequest(`/projects/episodes/${episodeId}`);
 }

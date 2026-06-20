@@ -250,6 +250,7 @@ export default function App() {
         {view === "project" ? (
           <ProjectView
             current={current}
+            username={user.username}
             onOpenEpisode={(drama, episode) => {
               setCurrent({ drama, episode });
               setView("script");
