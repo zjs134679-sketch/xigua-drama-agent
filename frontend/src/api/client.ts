@@ -535,6 +535,56 @@ export function generateCharacterAsset(body: {
   });
 }
 
+export interface SceneAsset {
+  id: number;
+  location: string | null;
+  time: string | null;
+  prompt: string | null;
+  status: string | null;
+  image_url: string | null;
+}
+
+export function listScenes(projectId: number): Promise<SceneAsset[]> {
+  return jsonRequest(`/projects/${projectId}/scenes`);
+}
+
+export function generateSceneAsset(body: {
+  scene_id: number;
+  art_style_id?: number;
+}): Promise<AssetGenerationResult> {
+  return jsonRequest("/assets/scene/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export interface ExtractResult {
+  status: number;
+  new?: { characters: number; scenes: number; props: number };
+  warn?: boolean;
+  level?: string;
+  message?: string;
+  hits?: ComplianceHit[];
+  banned?: boolean;
+}
+
+// 从分集剧本/原文 AI 提取角色 + 场景 + 道具
+export async function extractFromEpisode(episodeId: number, username = "local"): Promise<ExtractResult> {
+  const r = await apiFetch("/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ episode_id: episodeId, username }),
+  });
+  const data = await r.json();
+  if (r.ok) return { status: r.status, new: data.new, warn: data.warn };
+  const detail = data.detail;
+  if (detail && typeof detail === "object") {
+    return { status: r.status, level: detail.level, message: detail.message, hits: detail.hits, banned: detail.banned };
+  }
+  return { status: r.status, message: typeof detail === "string" ? detail : "提取失败" };
+}
+
 export type TimelineTrackName = "video" | "voiceover" | "subtitle" | "music";
 
 export interface TimelineClip {

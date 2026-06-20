@@ -1,17 +1,17 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Image, LoaderCircle, Sparkles, Users, Wand2 } from "lucide-react";
+import { AlertTriangle, Image, LoaderCircle, Mountain, Sparkles, Wand2 } from "lucide-react";
 import {
   extractFromEpisode,
-  generateCharacterAsset,
+  generateSceneAsset,
   listArtStyles,
-  listCharacters,
   listProjects,
+  listScenes,
   type ArtStyle,
-  type CharacterAsset,
   type Project,
+  type SceneAsset,
 } from "../api/client";
 
-export default function CharacterAssetsView({
+export default function SceneAssetsView({
   currentDramaId,
   currentEpisodeId,
   username = "local",
@@ -22,7 +22,7 @@ export default function CharacterAssetsView({
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<number | null>(null);
-  const [characters, setCharacters] = useState<CharacterAsset[]>([]);
+  const [scenes, setScenes] = useState<SceneAsset[]>([]);
   const [styles, setStyles] = useState<ArtStyle[]>([]);
   const [styleId, setStyleId] = useState<number | undefined>();
   const [generating, setGenerating] = useState<number | null>(null);
@@ -41,18 +41,18 @@ export default function CharacterAssetsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDramaId]);
 
-  const loadCharacters = (id: number) => listCharacters(id).then(setCharacters).catch((e: Error) => setNotice(e.message));
+  const loadScenes = (id: number) => listScenes(id).then(setScenes).catch((e: Error) => setNotice(e.message));
   useEffect(() => {
-    if (projectId != null) loadCharacters(projectId);
+    if (projectId != null) loadScenes(projectId);
   }, [projectId]);
 
-  const generate = async (character: CharacterAsset) => {
-    setGenerating(character.id);
+  const generate = async (scene: SceneAsset) => {
+    setGenerating(scene.id);
     setNotice("");
     try {
-      const result = await generateCharacterAsset({ character_id: character.id, art_style_id: styleId });
-      setNotice(result.warn ? "素材已生成，提示词包含需关注内容。" : "素材生成完成。 ");
-      if (projectId != null) await loadCharacters(projectId);
+      const result = await generateSceneAsset({ scene_id: scene.id, art_style_id: styleId });
+      setNotice(result.warn ? "场景图已生成，提示词包含需关注内容。" : "场景图生成完成。");
+      if (projectId != null) await loadScenes(projectId);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "生成失败");
     } finally {
@@ -62,7 +62,7 @@ export default function CharacterAssetsView({
 
   const extract = async () => {
     if (currentEpisodeId == null) {
-      setNotice("请先在「项目」里进入一个分集，再从它的剧本提取角色。");
+      setNotice("请先在「项目」里进入一个分集，再从它的剧本提取场景。");
       return;
     }
     setExtracting(true);
@@ -70,8 +70,8 @@ export default function CharacterAssetsView({
     try {
       const res = await extractFromEpisode(currentEpisodeId, username);
       if (res.status === 200 && res.new) {
-        setNotice(`提取完成：角色 +${res.new.characters}、场景 +${res.new.scenes}、道具 +${res.new.props}`);
-        if (projectId != null) await loadCharacters(projectId);
+        setNotice(`提取完成：场景 +${res.new.scenes}、角色 +${res.new.characters}、道具 +${res.new.props}`);
+        if (projectId != null) await loadScenes(projectId);
       } else {
         setNotice(res.message || "提取失败");
       }
@@ -85,7 +85,7 @@ export default function CharacterAssetsView({
   return (
     <div className="feature-view">
       <div className="feature-header">
-        <div><h2>角色资产</h2><p>从角色设定生成可复用的一致性参考图</p></div>
+        <div><h2>场景 / 造景</h2><p>从剧本提取场景，生成纯背景参考图</p></div>
         <div className="feature-filters">
           <button className="btn-primary" style={{ width: "auto", padding: "6px 14px" }} disabled={extracting} onClick={extract} title="从当前分集的剧本/原文中提取角色、场景、道具">
             {extracting ? <LoaderCircle className="spin" size={14} /> : <Wand2 size={14} />} AI 提取角色/场景
@@ -103,23 +103,23 @@ export default function CharacterAssetsView({
       {notice && <div className="feature-notice"><AlertTriangle size={14} /> {notice}</div>}
       <div className="feature-body">
         <div className="asset-grid character-grid">
-          {characters.map((character) => (
-            <article className="asset-card" key={character.id}>
-              <div className="asset-preview portrait">
-                {character.image_url ? <img src={character.image_url} alt={character.name} /> : <Image size={30} />}
+          {scenes.map((scene) => (
+            <article className="asset-card" key={scene.id}>
+              <div className="asset-preview">
+                {scene.image_url ? <img src={scene.image_url} alt={scene.location ?? ""} /> : <Image size={30} />}
               </div>
               <div className="asset-content">
-                <strong>{character.name}</strong>
-                <span>{character.role || "未设置角色类型"}</span>
-                <p>{character.appearance || "暂无外貌描述"}</p>
-                <button className="btn-secondary" disabled={generating != null} onClick={() => generate(character)}>
-                  {generating === character.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                  {character.image_url ? "重新生成" : "生成角色图"}
+                <strong>{scene.location || "未命名场景"}</strong>
+                <span>{scene.time || "未设置时间"}</span>
+                <p>{scene.prompt || "暂无背景提示词"}</p>
+                <button className="btn-secondary" disabled={generating != null} onClick={() => generate(scene)}>
+                  {generating === scene.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+                  {scene.image_url ? "重新生成" : "生成场景图"}
                 </button>
               </div>
             </article>
           ))}
-          {!characters.length && <div className="empty-state"><Users size={24} /> 当前项目暂无角色。点右上「AI 提取角色/场景」，从分集剧本自动提取。</div>}
+          {!scenes.length && <div className="empty-state"><Mountain size={24} /> 当前项目暂无场景。点右上「AI 提取角色/场景」，从分集剧本自动提取。</div>}
         </div>
       </div>
     </div>
