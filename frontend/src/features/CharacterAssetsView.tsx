@@ -10,7 +10,7 @@ import {
   type Project,
 } from "../api/client";
 
-export default function CharacterAssetsView() {
+export default function CharacterAssetsView({ currentDramaId }: { currentDramaId?: number | null }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<number | null>(null);
   const [characters, setCharacters] = useState<CharacterAsset[]>([]);
@@ -22,10 +22,14 @@ export default function CharacterAssetsView() {
   useEffect(() => {
     listProjects().then((rows) => {
       setProjects(rows);
-      if (rows.length) setProjectId(rows[0].id);
+      if (rows.length) {
+        const preferred = currentDramaId != null && rows.some((r) => r.id === currentDramaId) ? currentDramaId : rows[0].id;
+        setProjectId(preferred);
+      }
     }).catch((e: Error) => setNotice(e.message));
     listArtStyles().then(setStyles).catch(() => undefined);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDramaId]);
 
   const loadCharacters = (id: number) => listCharacters(id).then(setCharacters).catch((e: Error) => setNotice(e.message));
   useEffect(() => {

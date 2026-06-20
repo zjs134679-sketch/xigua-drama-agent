@@ -73,7 +73,13 @@ function synchronise(document: TimelineDocument, videoClips: TimelineClip[]): Ti
   };
 }
 
-export default function TimelineView() {
+export default function TimelineView({
+  currentDramaId,
+  currentEpisodeId,
+}: {
+  currentDramaId?: number | null;
+  currentEpisodeId?: number | null;
+}) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<number | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([]);
@@ -91,10 +97,12 @@ export default function TimelineView() {
     listProjects()
       .then((rows) => {
         setProjects(rows);
-        setProjectId(rows[0]?.id ?? null);
+        const preferred = currentDramaId != null && rows.some((r) => r.id === currentDramaId) ? currentDramaId : rows[0]?.id ?? null;
+        setProjectId(preferred);
       })
       .catch((error: Error) => setNotice(error.message));
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDramaId]);
 
   useEffect(() => {
     if (projectId == null) {
@@ -105,10 +113,12 @@ export default function TimelineView() {
     listEpisodes(projectId)
       .then((rows) => {
         setEpisodes(rows);
-        setEpisodeId(rows[0]?.id ?? null);
+        const preferred = currentEpisodeId != null && rows.some((r) => r.id === currentEpisodeId) ? currentEpisodeId : rows[0]?.id ?? null;
+        setEpisodeId(preferred);
       })
       .catch((error: Error) => setNotice(error.message));
-  }, [projectId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, currentEpisodeId]);
 
   useEffect(() => {
     if (episodeId == null) {

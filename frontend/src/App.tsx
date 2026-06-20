@@ -256,7 +256,7 @@ export default function App() {
               setView("script");
             }}
           />
-        ) : view === "script" ? <ScriptView username={user.username} current={current} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : view === "compute" ? <ComputeNodesView /> : view === "settings" ? <SettingsView /> : (
+        ) : view === "script" ? <ScriptView username={user.username} current={current} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView currentDramaId={current?.drama.id ?? null} /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} /> : view === "compute" ? <ComputeNodesView /> : view === "settings" ? <SettingsView /> : (
           <StoryboardView current={current} username={user.username} onBanned={() => setBanned(true)} />
         )}
       </div>
