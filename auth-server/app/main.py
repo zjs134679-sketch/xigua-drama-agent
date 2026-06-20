@@ -140,13 +140,8 @@ app = FastAPI(title="西瓜短剧Agent · 认证服务", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "tauri://localhost",
-        "http://tauri.localhost",
-        "https://tauri.localhost",
-    ],
+    # 本地任意端口（dev 多端口/预览）+ Tauri 壳
+    allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

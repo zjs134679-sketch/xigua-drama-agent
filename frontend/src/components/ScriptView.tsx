@@ -1,6 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, FileText, Loader2, Wand2 } from "lucide-react";
-import { generateScriptDraft, type ComplianceHit } from "../api/client";
+import {
+  generateEpisodeScript,
+  generateScriptDraft,
+  getEpisode,
+  type ComplianceHit,
+  type EpisodeSummary,
+  type Project,
+} from "../api/client";
 
 function HighlightedText({ text, hits }: { text: string; hits: ComplianceHit[] }) {
   const words = [...new Set(hits.map((hit) => hit.word).filter(Boolean))];
@@ -21,7 +28,16 @@ function HighlightedText({ text, hits }: { text: string; hits: ComplianceHit[] }
   );
 }
 
-export default function ScriptView({ username, onBanned }: { username: string; onBanned?: () => void }) {
+export default function ScriptView({
+  username,
+  current,
+  onBanned,
+}: {
+  username: string;
+  current?: { drama: Project; episode: EpisodeSummary } | null;
+  onBanned?: () => void;
+}) {
+  const episode = current?.episode ?? null;
   const [novel, setNovel] = useState(
     "夜里，林医生还在值班室翻看病历，窗外下着大雨。护士小张敲门进来，递上一杯热咖啡。",
   );
@@ -29,16 +45,40 @@ export default function ScriptView({ username, onBanned }: { username: string; o
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<{ level?: string; message?: string; hits?: ComplianceHit[] } | null>(null);
   const [warningHits, setWarningHits] = useState<ComplianceHit[]>([]);
+  const [savedHint, setSavedHint] = useState(false);
+
+  // 选中分集时，载入它的小说原文与已存剧本
+  useEffect(() => {
+    if (!episode) return;
+    let alive = true;
+    setErr(null);
+    setScript("");
+    setWarningHits([]);
+    getEpisode(episode.id)
+      .then((d) => {
+        if (!alive) return;
+        setNovel(d.content ?? "");
+        setScript(d.script_content ?? "");
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [episode?.id]);
 
   const run = async () => {
     setLoading(true);
     setErr(null);
     setScript("");
     setWarningHits([]);
+    setSavedHint(false);
     try {
-      const res = await generateScriptDraft(novel, username);
+      const res = episode
+        ? await generateEpisodeScript(episode.id, username) // 落库版
+        : await generateScriptDraft(novel, username);       // 快速试写
       if (res.status === 200 && res.script) {
         setScript(res.script);
+        if (episode) setSavedHint(true);
         if (res.warn) setWarningHits(res.hits ?? []);
       } else {
         setErr({ level: res.level, message: res.message, hits: res.hits });
@@ -56,7 +96,13 @@ export default function ScriptView({ username, onBanned }: { username: string; o
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
         <FileText size={15} color="var(--text2)" />
         <span style={{ fontSize: 12, fontWeight: 500 }}>剧本工作台</span>
-        <span style={{ fontSize: 11, color: "var(--text3)" }}>小说 → 编剧 Agent → 格式化剧本</span>
+        {episode ? (
+          <span style={{ fontSize: 11, color: "var(--text2)" }}>
+            {current?.drama.title} · 第{episode.episode_number}集 {episode.title}
+          </span>
+        ) : (
+          <span style={{ fontSize: 11, color: "var(--text3)" }}>小说 → 编剧 Agent → 格式化剧本（快速试写，未关联项目）</span>
+        )}
         <div style={{ flex: 1 }} />
         <button className="btn-primary" style={{ width: "auto", padding: "6px 14px", opacity: loading ? 0.7 : 1 }} onClick={run} disabled={loading}>
           {loading ? (

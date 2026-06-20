@@ -45,24 +45,21 @@ import ArtStylesView from "./features/ArtStylesView";
 import AuthView from "./features/AuthView";
 import CharacterAssetsView from "./features/CharacterAssetsView";
 import ComputeNodesView from "./features/ComputeNodesView";
+import ProjectView from "./features/ProjectView";
+import SettingsView from "./features/SettingsView";
 import SponsorDialog from "./features/SponsorDialog";
 import TimelineView from "./features/TimelineView";
+import type { EpisodeSummary, Project } from "./api/client";
 
-type ViewId = "storyboard" | "script" | "characters" | "art-styles" | "timeline" | "compute";
+type ViewId = "project" | "storyboard" | "script" | "characters" | "art-styles" | "timeline" | "compute" | "settings";
+type CurrentSelection = { drama: Project; episode: EpisodeSummary } | null;
 
 function WatermelonLogo({ size = 22 }: { size?: number }) {
-  return (
-    <svg viewBox="0 0 26 15" width={size} height={(size * 15) / 26} fill="none" strokeLinecap="round">
-      <path d="M2 2.5 A11 11 0 0 0 24 2.5" stroke="#23B24C" strokeWidth="1.6" />
-      {[9.3, 7.7, 6.1, 4.5, 2.9, 1.3].map((r) => (
-        <path key={r} d={`M${13 - r} 2.5 A${r} ${r} 0 0 0 ${13 + r} 2.5`} stroke="#F23A38" strokeWidth="1.2" />
-      ))}
-    </svg>
-  );
+  return <img src="/logo.png" alt="西瓜短剧Agent" width={size} height={size} style={{ display: "block", objectFit: "contain" }} />;
 }
 
 const RAIL: { icon: typeof Folder; label: string; view?: ViewId }[] = [
-  { icon: Folder, label: "项目" },
+  { icon: Folder, label: "项目", view: "project" },
   { icon: FileText, label: "剧本", view: "script" },
   { icon: Users, label: "角色资产", view: "characters" },
   { icon: Palette, label: "画风库", view: "art-styles" },
@@ -84,7 +81,8 @@ const TRACKS = [
 ];
 
 export default function App() {
-  const [view, setView] = useState<ViewId>("script");
+  const [view, setView] = useState<ViewId>("project");
+  const [current, setCurrent] = useState<CurrentSelection>(null);
   const [authReady, setAuthReady] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [sponsorOpen, setSponsorOpen] = useState(false);
@@ -233,7 +231,9 @@ export default function App() {
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid var(--border)", background: "var(--panel)" }}>
         <WatermelonLogo />
         <span style={{ fontSize: 13, fontWeight: 500 }}>西瓜短剧Agent</span>
-        <span style={{ fontSize: 11, color: "var(--text3)" }}>国内版 · 第3集 时光邮局</span>
+        <span style={{ fontSize: 11, color: "var(--text3)" }}>
+          {current ? `${current.drama.title} · 第${current.episode.episode_number}集 ${current.episode.title}` : "国内版"}
+        </span>
         <div style={{ flex: 1 }} />
         <div className="pill" style={{ border: "1px solid var(--border2)", color: "var(--text2)" }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", background: online ? "var(--green)" : "var(--text3)" }} />
@@ -265,10 +265,18 @@ export default function App() {
             </button>
           ))}
           <div style={{ flex: 1 }} />
-          <button className="rail-btn" title="设置"><Settings size={19} /></button>
+          <button className={`rail-btn${view === "settings" ? " active" : ""}`} title="设置" onClick={() => setView("settings")}><Settings size={19} /></button>
         </div>
 
-        {view === "script" ? <ScriptView username={user.username} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : view === "compute" ? <ComputeNodesView /> : (
+        {view === "project" ? (
+          <ProjectView
+            current={current}
+            onOpenEpisode={(drama, episode) => {
+              setCurrent({ drama, episode });
+              setView("script");
+            }}
+          />
+        ) : view === "script" ? <ScriptView username={user.username} current={current} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : view === "compute" ? <ComputeNodesView /> : view === "settings" ? <SettingsView /> : (
           <>
             {/* 中部 */}
             <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>

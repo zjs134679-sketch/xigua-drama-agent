@@ -288,6 +288,31 @@ export async function generateScriptDraft(content: string, username = "local"): 
   return { status: r.status, message: typeof detail === "string" ? detail : "生成失败" };
 }
 
+// 落库版：按 episode_id 生成并把剧本写回该分集
+export async function generateEpisodeScript(episodeId: number, username = "local"): Promise<ScriptDraftResponse> {
+  const r = await apiFetch("/script/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ episode_id: episodeId, username }),
+  });
+  const data = await r.json();
+  if (r.ok) {
+    return { status: r.status, script: data.script_content, warn: data.warn, hits: data.hits };
+  }
+  const detail = data.detail;
+  if (detail && typeof detail === "object") {
+    return {
+      status: r.status,
+      level: detail.level,
+      message: detail.message,
+      hits: detail.hits,
+      violationCount: detail.violation_count,
+      banned: detail.banned,
+    };
+  }
+  return { status: r.status, message: typeof detail === "string" ? detail : "生成失败" };
+}
+
 export interface ComplianceSyncResult {
   synced: boolean;
   unchanged: boolean;
@@ -321,6 +346,11 @@ export interface ArtStyle {
 export interface Project {
   id: number;
   title: string;
+  description?: string | null;
+  genre?: string | null;
+  style?: string | null;
+  status?: string | null;
+  total_episodes?: number | null;
 }
 
 export interface EpisodeSummary {
@@ -329,6 +359,26 @@ export interface EpisodeSummary {
   episode_number: number;
   title: string;
   status: string;
+  has_content?: boolean;
+  has_script?: boolean;
+}
+
+export interface EpisodeDetail extends EpisodeSummary {
+  content: string | null;
+  script_content: string | null;
+}
+
+export interface DramaInput {
+  title: string;
+  description?: string | null;
+  genre?: string | null;
+  style?: string | null;
+}
+
+export interface EpisodeInput {
+  episode_number: number;
+  title: string;
+  content?: string | null;
 }
 
 export interface CharacterAsset {
@@ -420,8 +470,28 @@ export function listProjects(): Promise<Project[]> {
   return jsonRequest("/projects");
 }
 
+export function createDrama(body: DramaInput): Promise<Project> {
+  return jsonRequest("/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export function listEpisodes(projectId: number): Promise<EpisodeSummary[]> {
   return jsonRequest(`/projects/${projectId}/episodes`);
+}
+
+export function createEpisode(projectId: number, body: EpisodeInput): Promise<EpisodeDetail> {
+  return jsonRequest(`/projects/${projectId}/episodes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function getEpisode(episodeId: number): Promise<EpisodeDetail> {
+  return jsonRequest(`/projects/episodes/${episodeId}`);
 }
 
 export function listCharacters(projectId: number): Promise<CharacterAsset[]> {
@@ -498,4 +568,49 @@ export async function exportTimeline(episodeId: number): Promise<TimelineExportR
     return { status: "failed", merged_url: null, error: data.error ?? data.detail ?? "导出失败" };
   }
   return data as TimelineExportResult;
+}
+
+// ===== 设置：LLM（编剧 / 分镜 Agent）=====
+export interface LLMConfig {
+  configured: boolean;
+  source: "db" | "env" | "none";
+  provider: string | null;
+  base_url: string | null;
+  model: string | null;
+  api_key_configured: boolean;
+  api_key_masked: string | null;
+}
+
+export interface LLMConfigInput {
+  provider?: string | null;
+  base_url: string;
+  model?: string | null;
+  api_key?: string | null; // 留空 = 沿用已存 key
+}
+
+export interface LLMTestResult {
+  ok: boolean;
+  message: string;
+  latency_ms?: number | null;
+  reply?: string | null;
+}
+
+export function getLLMConfig(): Promise<LLMConfig> {
+  return jsonRequest("/settings/llm");
+}
+
+export function saveLLMConfig(body: LLMConfigInput): Promise<LLMConfig> {
+  return jsonRequest("/settings/llm", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function testLLMConfig(body: Partial<LLMConfigInput>): Promise<LLMTestResult> {
+  return jsonRequest("/settings/llm/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
