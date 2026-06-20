@@ -1,6 +1,6 @@
 import { Ban } from "lucide-react";
 
-export default function BanScreen({ reason }: { reason?: string }) {
+export default function BanScreen({ reason, onLogout }: { reason?: string; onLogout?: () => void }) {
   return (
     <div
       style={{
@@ -24,6 +24,11 @@ export default function BanScreen({ reason }: { reason?: string }) {
         <br />
         如有疑问请联系客服申诉。
       </p>
+      {onLogout && (
+        <button className="btn-secondary" style={{ marginTop: 8, padding: "8px 18px" }} type="button" onClick={onLogout}>
+          退出当前账号
+        </button>
+      )}
     </div>
   );
 }

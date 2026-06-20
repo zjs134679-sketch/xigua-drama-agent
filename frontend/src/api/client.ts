@@ -1,4 +1,193 @@
 const API = "/api";
+const AUTH_API = import.meta.env.VITE_AUTH_URL || "http://127.0.0.1:8100";
+const TOKEN_KEY = "xigua.auth.token";
+const USER_KEY = "xigua.auth.user";
+const AUTH_TIMEOUT_MS = 5000;
+
+export const APP_VERSION = "0.1.0";
+
+export interface AuthUser {
+  username: string;
+  plan: string;
+  role: string;
+  violation_count: number;
+  banned: boolean;
+  banned_reason: string | null;
+}
+
+export interface AuthSession {
+  token: string;
+  user: AuthUser;
+}
+
+export interface VersionInfo {
+  latest: string;
+  url: string;
+  notes: string;
+}
+
+export class AuthError extends Error {
+  status: number;
+  banned: boolean;
+  reason?: string;
+
+  constructor(message: string, status = 0, banned = false, reason?: string) {
+    super(message);
+    this.name = "AuthError";
+    this.status = status;
+    this.banned = banned;
+    this.reason = reason;
+  }
+}
+
+let memoryToken: string | null = null;
+
+function readToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || memoryToken;
+  } catch {
+    return memoryToken;
+  }
+}
+
+function saveSession(session: AuthSession): void {
+  memoryToken = session.token;
+  try {
+    localStorage.setItem(TOKEN_KEY, session.token);
+    localStorage.setItem(USER_KEY, JSON.stringify(session.user));
+  } catch {
+    // Memory storage keeps the current desktop session usable.
+  }
+}
+
+function parseAuthUser(value: unknown): AuthUser | null {
+  if (!value || typeof value !== "object") return null;
+  const user = value as Record<string, unknown>;
+  if (typeof user.username !== "string" || !user.username.trim() || typeof user.banned !== "boolean") {
+    return null;
+  }
+  return {
+    username: user.username,
+    plan: typeof user.plan === "string" ? user.plan : "free",
+    role: typeof user.role === "string" ? user.role : "user",
+    violation_count: typeof user.violation_count === "number" ? user.violation_count : 0,
+    banned: user.banned,
+    banned_reason: typeof user.banned_reason === "string" ? user.banned_reason : null,
+  };
+}
+
+export function logout(): void {
+  memoryToken = null;
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+  } catch {
+    // Storage can be unavailable in restricted webviews.
+  }
+}
+
+function authorized(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  const token = readToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return { ...init, headers };
+}
+
+function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${API}${path}`, authorized(init));
+}
+
+async function responseData(response: Response): Promise<Record<string, unknown>> {
+  try {
+    const data: unknown = await response.json();
+    return data && typeof data === "object" ? data as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function authFailure(response: Response, data: Record<string, unknown>): AuthError {
+  const detail = data.detail;
+  const detailObject = detail && typeof detail === "object" ? detail as Record<string, unknown> : undefined;
+  const banned = response.status === 403 || detailObject?.banned === true;
+  const reason = typeof detailObject?.reason === "string" ? detailObject.reason : undefined;
+  const detailMessage = typeof detailObject?.message === "string" ? detailObject.message : undefined;
+  const message = detailMessage || (typeof detail === "string" ? detail : undefined) || "认证服务暂不可用";
+  return new AuthError(message, response.status, banned, reason);
+}
+
+async function authRequest(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
+  let response: Response;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), AUTH_TIMEOUT_MS);
+  try {
+    response = await fetch(`${AUTH_API}${path}`, authorized({ ...init, signal: controller.signal }));
+  } catch {
+    throw new AuthError("认证服务暂不可用");
+  } finally {
+    window.clearTimeout(timeout);
+  }
+  const data = await responseData(response);
+  if (!response.ok) throw authFailure(response, data);
+  return data;
+}
+
+export async function authenticate(
+  mode: "login" | "register",
+  username: string,
+  password: string,
+): Promise<AuthSession> {
+  const data = await authRequest(`/auth/${mode}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const token = data.token;
+  const user = parseAuthUser(data.user);
+  if (typeof token !== "string" || !token || !user) {
+    throw new AuthError("认证服务返回了无效数据");
+  }
+  const session = { token, user };
+  saveSession(session);
+  return session;
+}
+
+export async function restoreAuthSession(): Promise<AuthSession | null> {
+  const token = readToken();
+  if (!token) return null;
+  const user = parseAuthUser(await authRequest("/auth/me"));
+  if (!user) throw new AuthError("认证服务返回了无效数据");
+  const session = { token, user };
+  saveSession(session);
+  return session;
+}
+
+export async function getLatestVersion(): Promise<VersionInfo> {
+  const data = await authRequest("/version");
+  return {
+    latest: typeof data.latest === "string" ? data.latest : "",
+    url: typeof data.url === "string" ? data.url : "",
+    notes: typeof data.notes === "string" ? data.notes : "",
+  };
+}
+
+export function isNewerVersion(latest: string, current = APP_VERSION): boolean {
+  const parse = (value: string) => value.trim().replace(/^v/i, "").split(".").map((part) => {
+    const match = part.match(/^\d+/);
+    return match ? Number(match[0]) : Number.NaN;
+  });
+  const next = parse(latest);
+  const installed = parse(current);
+  if (!latest.trim() || next.some(Number.isNaN) || installed.some(Number.isNaN)) return false;
+  const length = Math.max(next.length, installed.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (next[index] ?? 0) - (installed[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return false;
+}
 
 export interface ComplianceHit {
   word: string;
@@ -12,7 +201,7 @@ export interface ComplianceResult {
 }
 
 export async function checkCompliance(text: string): Promise<ComplianceResult> {
-  const r = await fetch(`${API}/compliance/check`, {
+  const r = await apiFetch("/compliance/check", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
@@ -21,7 +210,7 @@ export async function checkCompliance(text: string): Promise<ComplianceResult> {
 }
 
 export async function getComputeHealth(): Promise<{ type: string; base_url: string; online: boolean }> {
-  const r = await fetch(`${API}/compute/health`);
+  const r = await apiFetch("/compute/health");
   return r.json();
 }
 
@@ -37,7 +226,7 @@ export interface ScriptDraftResponse {
 }
 
 export async function generateScriptDraft(content: string, username = "local"): Promise<ScriptDraftResponse> {
-  const r = await fetch(`${API}/script/draft`, {
+  const r = await apiFetch("/script/draft", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content, username }),
@@ -123,7 +312,7 @@ export interface AssetGenerationResult {
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API}${url}`, init);
+  const response = await apiFetch(url, init);
   const data = await response.json();
   if (!response.ok) {
     const message = data.message ?? data.detail?.message ?? data.detail ?? "请求失败";
@@ -215,7 +404,7 @@ export function saveTimeline(episodeId: number, timeline: TimelineDocument): Pro
 }
 
 export async function exportTimeline(episodeId: number): Promise<TimelineExportResult> {
-  const response = await fetch(`${API}/timeline/${episodeId}/export`, {
+  const response = await apiFetch(`/timeline/${episodeId}/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),

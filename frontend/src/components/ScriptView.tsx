@@ -21,7 +21,7 @@ function HighlightedText({ text, hits }: { text: string; hits: ComplianceHit[] }
   );
 }
 
-export default function ScriptView({ onBanned }: { onBanned?: () => void }) {
+export default function ScriptView({ username, onBanned }: { username: string; onBanned?: () => void }) {
   const [novel, setNovel] = useState(
     "夜里，林医生还在值班室翻看病历，窗外下着大雨。护士小张敲门进来，递上一杯热咖啡。",
   );
@@ -36,7 +36,7 @@ export default function ScriptView({ onBanned }: { onBanned?: () => void }) {
     setScript("");
     setWarningHits([]);
     try {
-      const res = await generateScriptDraft(novel);
+      const res = await generateScriptDraft(novel, username);
       if (res.status === 200 && res.script) {
         setScript(res.script);
         if (res.warn) setWarningHits(res.hits ?? []);

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
   Cpu,
+  Download,
   FileText,
   Film,
   Folder,
@@ -11,6 +12,7 @@ import {
   Layers,
   LayoutGrid,
   List,
+  LogOut,
   Play,
   Palette,
   Scissors,
@@ -20,18 +22,29 @@ import {
   SkipBack,
   Users,
   Wand2,
+  X,
 } from "lucide-react";
 import {
+  AuthError,
   checkCompliance,
   getComplianceStatus,
   getComputeHealth,
+  getLatestVersion,
+  isNewerVersion,
+  logout,
+  restoreAuthSession,
   syncCompliance,
+  type AuthSession,
+  type AuthUser,
   type ComplianceResult,
+  type VersionInfo,
 } from "./api/client";
 import BanScreen from "./components/BanScreen";
 import ScriptView from "./components/ScriptView";
 import ArtStylesView from "./features/ArtStylesView";
+import AuthView from "./features/AuthView";
 import CharacterAssetsView from "./features/CharacterAssetsView";
+import SponsorDialog from "./features/SponsorDialog";
 import TimelineView from "./features/TimelineView";
 
 type ViewId = "storyboard" | "script" | "characters" | "art-styles" | "timeline";
@@ -71,12 +84,60 @@ const TRACKS = [
 
 export default function App() {
   const [view, setView] = useState<ViewId>("script");
+  const [authReady, setAuthReady] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [sponsorOpen, setSponsorOpen] = useState(false);
+  const sponsorShown = useRef(false);
+  const [updateInfo, setUpdateInfo] = useState<VersionInfo | null>(null);
   const [online, setOnline] = useState<boolean | null>(null);
   const [text, setText] = useState("柜台前，女主低头递出一封泛黄的旧信封，暖色灯光，电影质感");
   const [result, setResult] = useState<ComplianceResult | null>(null);
   const [banned, setBanned] = useState(false);
   const [banReason, setBanReason] = useState<string | undefined>();
   const [dictionaryVersion, setDictionaryVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    restoreAuthSession()
+      .then((session) => {
+        if (!alive || !session) return;
+        if (session.user.banned) {
+          setBanned(true);
+          setBanReason(session.user.banned_reason ?? undefined);
+          return;
+        }
+        setUser(session.user);
+        if (!sponsorShown.current) {
+          sponsorShown.current = true;
+          setSponsorOpen(true);
+        }
+      })
+      .catch((error) => {
+        if (!alive) return;
+        if (error instanceof AuthError && error.banned) {
+          setBanned(true);
+          setBanReason(error.reason);
+        } else {
+          logout();
+        }
+      })
+      .finally(() => alive && setAuthReady(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    getLatestVersion()
+      .then((info) => {
+        if (alive && isNewerVersion(info.latest)) setUpdateInfo(info);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -90,16 +151,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!user) return;
     syncCompliance()
       .then((status) => setDictionaryVersion(status.version))
       .catch(() => undefined);
-    getComplianceStatus()
+    getComplianceStatus(user.username)
       .then((status) => {
         setBanned(status.banned);
         setBanReason(status.banned_reason ?? undefined);
       })
       .catch(() => undefined);
-  }, []);
+  }, [user]);
 
   const runCheck = async () => {
     try {
@@ -109,9 +171,62 @@ export default function App() {
     }
   };
 
+  const handleAuthenticated = (session: AuthSession) => {
+    if (session.user.banned) {
+      logout();
+      setBanned(true);
+      setBanReason(session.user.banned_reason ?? undefined);
+      return;
+    }
+    setUser(session.user);
+    setBanned(false);
+    setBanReason(undefined);
+    if (!sponsorShown.current) {
+      sponsorShown.current = true;
+      setSponsorOpen(true);
+    }
+  };
+
+  const handleBanned = (reason?: string) => {
+    logout();
+    setUser(null);
+    setBanned(true);
+    setBanReason(reason);
+  };
+
+  const handleLogout = () => {
+    logout();
+    setUser(null);
+    setBanned(false);
+    setBanReason(undefined);
+    setSponsorOpen(false);
+  };
+
+  if (!authReady) {
+    return <div className="auth-loading"><WatermelonLogo size={38} /><span>正在连接账号服务…</span></div>;
+  }
+
+  if (banned) {
+    return <div style={{ position: "relative", height: "100vh", background: "var(--bg)" }}><BanScreen reason={banReason} onLogout={handleLogout} /></div>;
+  }
+
+  if (!user) {
+    return <AuthView onAuthenticated={handleAuthenticated} onBanned={handleBanned} />;
+  }
+
   return (
     <div style={{ position: "relative", height: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
-      {banned && <BanScreen reason={banReason} />}
+      {sponsorOpen && <SponsorDialog onClose={() => setSponsorOpen(false)} />}
+
+      {updateInfo && (
+        <div className="update-banner">
+          <Download size={14} />
+          <span>发现新版本 {updateInfo.latest}</span>
+          {updateInfo.notes && <span className="update-notes">{updateInfo.notes}</span>}
+          {updateInfo.url && <a href={updateInfo.url} target="_blank" rel="noreferrer">下载更新</a>}
+          <button type="button" aria-label="关闭升级提醒" onClick={() => setUpdateInfo(null)}><X size={14} /></button>
+        </div>
+      )}
 
       {/* 顶栏 */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid var(--border)", background: "var(--panel)" }}>
@@ -127,7 +242,11 @@ export default function App() {
         <div className="pill" style={{ background: "rgba(43,178,76,0.16)", color: "var(--green-t)" }}>
           <ShieldCheck size={14} /> 合规
         </div>
-        <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(80,140,255,0.18)", color: "var(--blue-t)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 500 }}>瓜</div>
+        <div className="user-menu">
+          <div className="user-avatar">{user.username.slice(0, 1).toUpperCase()}</div>
+          <span title={user.username}>{user.username}</span>
+          <button type="button" onClick={handleLogout}><LogOut size={13} /> 退出</button>
+        </div>
       </div>
 
       {/* 主体 */}
@@ -148,7 +267,7 @@ export default function App() {
           <button className="rail-btn" title="设置"><Settings size={19} /></button>
         </div>
 
-        {view === "script" ? <ScriptView onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : (
+        {view === "script" ? <ScriptView username={user.username} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : (
           <>
             {/* 中部 */}
             <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
