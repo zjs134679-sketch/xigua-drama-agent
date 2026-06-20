@@ -21,7 +21,13 @@ import {
   Users,
   Wand2,
 } from "lucide-react";
-import { checkCompliance, getComputeHealth, type ComplianceResult } from "./api/client";
+import {
+  checkCompliance,
+  getComplianceStatus,
+  getComputeHealth,
+  syncCompliance,
+  type ComplianceResult,
+} from "./api/client";
 import BanScreen from "./components/BanScreen";
 import ScriptView from "./components/ScriptView";
 import ArtStylesView from "./features/ArtStylesView";
@@ -68,7 +74,9 @@ export default function App() {
   const [online, setOnline] = useState<boolean | null>(null);
   const [text, setText] = useState("柜台前，女主低头递出一封泛黄的旧信封，暖色灯光，电影质感");
   const [result, setResult] = useState<ComplianceResult | null>(null);
-  const [banned] = useState(false);
+  const [banned, setBanned] = useState(false);
+  const [banReason, setBanReason] = useState<string | undefined>();
+  const [dictionaryVersion, setDictionaryVersion] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -81,6 +89,18 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    syncCompliance()
+      .then((status) => setDictionaryVersion(status.version))
+      .catch(() => undefined);
+    getComplianceStatus()
+      .then((status) => {
+        setBanned(status.banned);
+        setBanReason(status.banned_reason ?? undefined);
+      })
+      .catch(() => undefined);
+  }, []);
+
   const runCheck = async () => {
     try {
       setResult(await checkCompliance(text));
@@ -91,7 +111,7 @@ export default function App() {
 
   return (
     <div style={{ position: "relative", height: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
-      {banned && <BanScreen />}
+      {banned && <BanScreen reason={banReason} />}
 
       {/* 顶栏 */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid var(--border)", background: "var(--panel)" }}>
@@ -128,7 +148,7 @@ export default function App() {
           <button className="rail-btn" title="设置"><Settings size={19} /></button>
         </div>
 
-        {view === "script" ? <ScriptView /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : (
+        {view === "script" ? <ScriptView onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : (
           <>
             {/* 中部 */}
             <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -224,6 +244,9 @@ export default function App() {
       <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "6px 12px", borderTop: "1px solid var(--border)", background: "var(--panel)", fontSize: 11, color: "var(--text3)" }}>
         <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}><Cpu size={13} /> GPU {online ? "在线" : "—"}</span>
         <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}><Layers size={13} /> 队列 0</span>
+        <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+          <ShieldCheck size={13} /> {dictionaryVersion ? `词库 v${dictionaryVersion}` : "本地词库"}
+        </span>
         <div style={{ flex: 1 }} />
         <span style={{ color: "var(--amber)", display: "inline-flex", gap: 4, alignItems: "center" }}>
           <AlertTriangle size={13} /> 内容须遵守中国法律法规 · 三次红线违规将封号

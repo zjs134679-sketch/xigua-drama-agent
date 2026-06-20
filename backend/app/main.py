@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.db import init_db
 from app.core.logging import logger, setup_logging
 from app.services.compliance import dictionary
+from app.services.compliance.sync import sync_dictionary
 
 
 @asynccontextmanager
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     setup_logging()
     init_db()
     dictionary.load()
+    sync_dictionary()
     logger.info("启动完成 | 词库 %s", dictionary.stats())
     yield
 

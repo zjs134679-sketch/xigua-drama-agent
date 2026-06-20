@@ -12,6 +12,7 @@ from app.models.domain import ArtStyle, Asset, Character, Scene
 from app.models.system import Violation
 from app.services import asset_generation
 from app.services.asset_generation import ComplianceBlocked, build_character_prompt, build_scene_prompt
+from app.services.compliance import enforce
 from app.services.compliance.filter import FilterResult, Hit
 from app.services.compute import JobResult
 
@@ -39,6 +40,7 @@ def test_red_prompt_is_recorded_and_never_sent(monkeypatch: pytest.MonkeyPatch):
     db = Session(engine)
     result = FilterResult("red", [Hit("占位命中词", "red", "测试")])
     monkeypatch.setattr(asset_generation, "check", lambda _prompt: result)
+    monkeypatch.setattr(enforce, "report_to_auth", lambda *_args: None)
 
     def should_not_select_node(_db):
         raise AssertionError("红线 prompt 不得进入算力节点")

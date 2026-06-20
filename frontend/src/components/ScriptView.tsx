@@ -2,22 +2,48 @@ import { useState } from "react";
 import { AlertTriangle, FileText, Loader2, Wand2 } from "lucide-react";
 import { generateScriptDraft, type ComplianceHit } from "../api/client";
 
-export default function ScriptView() {
+function HighlightedText({ text, hits }: { text: string; hits: ComplianceHit[] }) {
+  const words = [...new Set(hits.map((hit) => hit.word).filter(Boolean))];
+  if (words.length === 0) return <>{text}</>;
+  const escaped = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
+  const lowered = new Set(words.map((word) => word.toLocaleLowerCase()));
+  return (
+    <>
+      {text.split(pattern).map((part, index) =>
+        lowered.has(part.toLocaleLowerCase()) ? (
+          <mark key={`${part}-${index}`} style={{ background: "rgba(224,160,27,0.35)", color: "inherit" }}>{part}</mark>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
+export default function ScriptView({ onBanned }: { onBanned?: () => void }) {
   const [novel, setNovel] = useState(
     "夜里，林医生还在值班室翻看病历，窗外下着大雨。护士小张敲门进来，递上一杯热咖啡。",
   );
   const [script, setScript] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<{ level?: string; message?: string; hits?: ComplianceHit[] } | null>(null);
+  const [warningHits, setWarningHits] = useState<ComplianceHit[]>([]);
 
   const run = async () => {
     setLoading(true);
     setErr(null);
     setScript("");
+    setWarningHits([]);
     try {
       const res = await generateScriptDraft(novel);
-      if (res.status === 200 && res.script) setScript(res.script);
-      else setErr({ level: res.level, message: res.message, hits: res.hits });
+      if (res.status === 200 && res.script) {
+        setScript(res.script);
+        if (res.warn) setWarningHits(res.hits ?? []);
+      } else {
+        setErr({ level: res.level, message: res.message, hits: res.hits });
+        if (res.banned) onBanned?.();
+      }
     } catch {
       setErr({ message: "请求失败，后端是否在运行？" });
     } finally {
@@ -68,7 +94,23 @@ export default function ScriptView() {
                 )}
               </div>
             ) : script ? (
-              script
+              <>
+                {warningHits.length > 0 && (
+                  <div style={{ border: "1px solid var(--amber)", borderRadius: 8, padding: 10, marginBottom: 10, color: "var(--amber)", fontSize: 12 }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", fontWeight: 500 }}>
+                      <AlertTriangle size={15} /> 黄线提示 · 建议替换高亮内容
+                    </div>
+                    <div style={{ marginTop: 5, color: "var(--text2)" }}>
+                      命中：{warningHits.map((hit, index) => (
+                        <mark key={`${hit.word}-${index}`} style={{ background: "rgba(224,160,27,0.3)", color: "inherit" }}>
+                          {hit.word}({hit.category}){index < warningHits.length - 1 ? "、" : ""}
+                        </mark>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <HighlightedText text={script} hits={warningHits} />
+              </>
             ) : (
               <span style={{ color: "var(--text3)" }}>点击右上「生成剧本」，DeepSeek 会按方法论输出格式化剧本…</span>
             )}

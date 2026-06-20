@@ -9,8 +9,11 @@
 """
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
 import hmac
+import json
 import os
 import time
 from datetime import datetime
@@ -30,6 +33,21 @@ BAN_THRESHOLD = int(os.environ.get("XIGUA_BAN_THRESHOLD", "3"))
 # 升级信息（后续接 OSS/对象存储下载地址）
 LATEST_VERSION = os.environ.get("XIGUA_LATEST_VERSION", "0.1.0")
 DOWNLOAD_URL = os.environ.get("XIGUA_DOWNLOAD_URL", "")
+
+COMPLIANCE_DICTIONARY = {
+    "red": ["云端占位红线词|演示", "云端占位禁用词|演示"],
+    "yellow": ["云端占位黄线词|演示", "云端占位提醒词|演示"],
+}
+_dictionary_json = json.dumps(
+    COMPLIANCE_DICTIONARY,
+    ensure_ascii=False,
+    separators=(",", ":"),
+    sort_keys=True,
+).encode("utf-8")
+COMPLIANCE_DICT_VERSION = os.environ.get(
+    "XIGUA_COMPLIANCE_DICT_VERSION",
+    hashlib.sha256(_dictionary_json).hexdigest()[:12],
+)
 
 engine = create_engine(DB_URL, connect_args={"check_same_thread": False}, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -167,7 +185,35 @@ def report_violation(body: ViolationReport, db: Session = Depends(get_db)) -> di
             user.banned = True
             user.banned_reason = f"红线违规累计达到 {BAN_THRESHOLD} 次"
     db.commit()
-    return {"violation_count": user.violation_count, "banned": user.banned}
+    return {
+        "violation_count": user.violation_count,
+        "banned": user.banned,
+        "banned_reason": user.banned_reason,
+    }
+
+
+@app.get("/compliance/status")
+def compliance_status(username: str, db: Session = Depends(get_db)) -> dict:
+    user = db.scalars(select(User).where(User.username == username)).first()
+    if not user:
+        raise HTTPException(404, "用户不存在")
+    return user_view(user)
+
+
+@app.get("/compliance/dict")
+def compliance_dictionary(since: str | None = None) -> dict:
+    if since == COMPLIANCE_DICT_VERSION:
+        return {
+            "version": COMPLIANCE_DICT_VERSION,
+            "encoding": "gzip+base64",
+            "payload": None,
+        }
+    payload = base64.b64encode(gzip.compress(_dictionary_json, mtime=0)).decode("ascii")
+    return {
+        "version": COMPLIANCE_DICT_VERSION,
+        "encoding": "gzip+base64",
+        "payload": payload,
+    }
 
 
 @app.get("/version")

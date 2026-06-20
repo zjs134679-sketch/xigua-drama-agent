@@ -5,9 +5,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.user_state import ensure_active_user
 from app.core.db import get_db
 from app.models.system import ComputeNode as ComputeNodeRow
-from app.models.system import User
 from app.schemas.compute import Text2ImageRequest
 from app.services.compliance import check
 from app.services.compliance.enforce import record_violation
@@ -42,9 +42,7 @@ def list_nodes(db: Session = Depends(get_db)) -> list[dict]:
 @router.post("/text2image")
 async def text2image(req: Text2ImageRequest, db: Session = Depends(get_db)):
     # 0. 封号校验
-    user = db.scalars(select(User).where(User.username == (req.username or "local"))).first()
-    if user and user.banned:
-        raise HTTPException(status_code=403, detail={"banned": True, "message": "账号已封禁，无法继续使用"})
+    ensure_active_user(db, req.username)
 
     # 1. 合规过滤（对最终绘画提示词）
     result = check(req.prompt)

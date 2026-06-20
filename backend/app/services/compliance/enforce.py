@@ -4,6 +4,9 @@
 """
 from __future__ import annotations
 
+from typing import Any
+
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,6 +32,63 @@ def _get_or_create_user(db: Session, username: str) -> User:
     return user
 
 
+def _remote_state(data: Any) -> dict | None:
+    if not isinstance(data, dict) or not isinstance(data.get("banned"), bool):
+        return None
+    try:
+        violation_count = max(0, int(data.get("violation_count", 0)))
+    except (TypeError, ValueError):
+        return None
+    reason = data.get("banned_reason")
+    return {
+        "violation_count": violation_count,
+        "banned": data["banned"],
+        "banned_reason": reason if isinstance(reason, str) else None,
+    }
+
+
+def report_to_auth(username: str | None, result: FilterResult) -> dict | None:
+    """Best-effort red-line report; local enforcement remains the offline fallback."""
+    if result.level != "red":
+        return None
+    try:
+        response = httpx.post(
+            f"{settings.auth_server_url.rstrip('/')}/compliance/violation",
+            json={"username": username or "local", "level": "red"},
+            timeout=0.75,
+        )
+        response.raise_for_status()
+        return _remote_state(response.json())
+    except Exception:
+        return None
+
+
+def sync_banned_state(db: Session, username: str | None) -> dict | None:
+    """Refresh one cached user from the auth server without breaking offline use."""
+    username = username or "local"
+    try:
+        response = httpx.get(
+            f"{settings.auth_server_url.rstrip('/')}/compliance/status",
+            params={"username": username},
+            timeout=0.75,
+        )
+        response.raise_for_status()
+        state = _remote_state(response.json())
+        if state is None:
+            return None
+        user = _get_or_create_user(db, username)
+        user.violation_count = state["violation_count"]
+        user.banned = state["banned"]
+        user.banned_reason = state["banned_reason"]
+        db.commit()
+        return state
+    except (httpx.HTTPError, TypeError, ValueError):
+        return None
+    except Exception:
+        db.rollback()
+        return None
+
+
 def record_violation(db: Session, username: str | None, result: FilterResult, source: str = "image_prompt") -> dict:
     username = username or "local"
     user = _get_or_create_user(db, username)
@@ -49,4 +109,14 @@ def record_violation(db: Session, username: str | None, result: FilterResult, so
             user.banned = True
             user.banned_reason = f"红线违规累计达到 {settings.ban_threshold} 次"
     db.commit()
+    if result.level == "red":
+        remote = report_to_auth(username, result)
+        if remote is not None:
+            try:
+                user.violation_count = remote["violation_count"]
+                user.banned = remote["banned"]
+                user.banned_reason = remote["banned_reason"]
+                db.commit()
+            except Exception:
+                db.rollback()
     return {"violation_count": user.violation_count, "banned": user.banned}

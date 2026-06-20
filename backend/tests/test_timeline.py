@@ -11,6 +11,7 @@ from app.api.timeline import ExportRequest, build_timeline
 from app.core.db import Base
 from app.models.domain import Episode, Storyboard
 from app.models.system import Violation
+from app.services.compliance import enforce
 from app.services.compliance.filter import FilterResult, Hit
 from app.services.video_compose import compose_video
 
@@ -71,6 +72,8 @@ def test_export_blocks_placeholder_red_subtitle_and_records_mask(monkeypatch):
     episode = seed_episode(db)
     blocked = FilterResult("red", [Hit("占位命中词", "red", "测试")])
     monkeypatch.setattr(timeline_api, "check", lambda _text: blocked)
+    monkeypatch.setattr(timeline_api, "ensure_active_user", lambda *_args: None)
+    monkeypatch.setattr(enforce, "report_to_auth", lambda *_args: None)
 
     def should_not_compose(*_args, **_kwargs):
         raise AssertionError("被拦截的字幕不得进入导出")

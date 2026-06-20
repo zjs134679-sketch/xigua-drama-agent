@@ -5,9 +5,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.user_state import ensure_active_user
 from app.core.db import get_db
 from app.models.domain import ArtStyle
-from app.models.system import User
 from app.schemas.assets import (
     ArtStyleCreate,
     ArtStyleUpdate,
@@ -84,12 +84,6 @@ def delete_style(style_id: int, db: Session = Depends(get_db)) -> dict:
     return {"deleted": True}
 
 
-def _ensure_active_user(db: Session, username: str | None) -> None:
-    user = db.scalars(select(User).where(User.username == (username or "local"))).first()
-    if user and user.banned:
-        raise HTTPException(403, detail={"banned": True, "message": "账号已封禁，无法继续使用"})
-
-
 def _outcome_view(outcome: GenerationOutcome) -> dict:
     return {
         "status": outcome.result.status,
@@ -126,7 +120,7 @@ def _error_response(exc: Exception):
 
 @assets_router.post("/character/generate")
 async def generate_character(body: CharacterGenerateRequest, db: Session = Depends(get_db)):
-    _ensure_active_user(db, body.username)
+    ensure_active_user(db, body.username)
     try:
         outcome = await generate_character_asset(
             db,
@@ -144,7 +138,7 @@ async def generate_character(body: CharacterGenerateRequest, db: Session = Depen
 
 @assets_router.post("/scene/generate")
 async def generate_scene(body: SceneGenerateRequest, db: Session = Depends(get_db)):
-    _ensure_active_user(db, body.username)
+    ensure_active_user(db, body.username)
     try:
         outcome = await generate_scene_asset(
             db,

@@ -32,13 +32,15 @@ export interface ScriptDraftResponse {
   level?: string;
   message?: string;
   hits?: ComplianceHit[];
+  violationCount?: number;
+  banned?: boolean;
 }
 
-export async function generateScriptDraft(content: string): Promise<ScriptDraftResponse> {
+export async function generateScriptDraft(content: string, username = "local"): Promise<ScriptDraftResponse> {
   const r = await fetch(`${API}/script/draft`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, username }),
   });
   const data = await r.json();
   if (r.ok) {
@@ -46,9 +48,37 @@ export async function generateScriptDraft(content: string): Promise<ScriptDraftR
   }
   const detail = data.detail;
   if (detail && typeof detail === "object") {
-    return { status: r.status, level: detail.level, message: detail.message, hits: detail.hits };
+    return {
+      status: r.status,
+      level: detail.level,
+      message: detail.message,
+      hits: detail.hits,
+      violationCount: detail.violation_count,
+      banned: detail.banned,
+    };
   }
   return { status: r.status, message: typeof detail === "string" ? detail : "生成失败" };
+}
+
+export interface ComplianceSyncResult {
+  synced: boolean;
+  unchanged: boolean;
+  version: string | null;
+}
+
+export interface ComplianceStatus {
+  username: string;
+  violation_count: number;
+  banned: boolean;
+  banned_reason: string | null;
+}
+
+export function syncCompliance(): Promise<ComplianceSyncResult> {
+  return jsonRequest("/compliance/sync", { method: "POST" });
+}
+
+export function getComplianceStatus(username = "local"): Promise<ComplianceStatus> {
+  return jsonRequest(`/compliance/status?username=${encodeURIComponent(username)}`);
 }
 
 export interface ArtStyle {

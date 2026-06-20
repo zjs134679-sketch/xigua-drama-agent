@@ -19,12 +19,15 @@ class EpisodeCreate(BaseModel):
 class ScriptGenerateRequest(BaseModel):
     episode_id: int
     temperature: float = 0.7
+    username: str | None = None
 
 
 class ScriptDraftRequest(BaseModel):
     content: str  # 小说原文（快速试写，不落库）
     temperature: float = 0.7
+    username: str | None = None
 
 
 class ExtractRequest(BaseModel):
     episode_id: int
+    username: str | None = None

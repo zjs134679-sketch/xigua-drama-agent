@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.user_state import ensure_active_user
 from app.core.config import settings
 from app.core.db import get_db
 from app.models.domain import Asset, Episode, Storyboard, VideoMerge
@@ -259,6 +260,7 @@ def export_timeline(
     body: ExportRequest | None = None,
     db: Session = Depends(get_db),
 ):
+    ensure_active_user(db, body.username if body else None)
     document = get_timeline_document(db, episode_id)
     checked: set[tuple[int | None, str]] = set()
     for track_name in ("video", "voiceover", "subtitle", "music"):
