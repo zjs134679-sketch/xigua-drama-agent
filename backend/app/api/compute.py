@@ -16,6 +16,26 @@ from app.services.compute import ImageJob, get_active_node
 router = APIRouter(prefix="/compute", tags=["compute"])
 
 
+def _node_payload(row: ComputeNodeRow) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "type": row.type,
+        "base_url": row.base_url,
+        "provider": row.provider,
+        "model": row.model,
+        "priority": row.priority,
+        "is_active": row.is_active,
+        "capabilities": row.capabilities,
+        "last_status": row.last_status,
+        "token_configured": bool(row.token),
+        "api_key_configured": bool(row.api_key),
+        "api_key_masked": "••••••••" if row.api_key else None,
+        "created_at": str(row.created_at) if row.created_at else None,
+        "updated_at": str(row.updated_at) if row.updated_at else None,
+    }
+
+
 @router.get("/health")
 async def compute_health(db: Session = Depends(get_db)) -> dict:
     node = get_active_node(db)
@@ -25,18 +45,7 @@ async def compute_health(db: Session = Depends(get_db)) -> dict:
 @router.get("/nodes")
 def list_nodes(db: Session = Depends(get_db)) -> list[dict]:
     rows = db.scalars(select(ComputeNodeRow).order_by(ComputeNodeRow.priority.desc())).all()
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "type": r.type,
-            "base_url": r.base_url,
-            "priority": r.priority,
-            "is_active": r.is_active,
-            "last_status": r.last_status,
-        }
-        for r in rows
-    ]
+    return [_node_payload(row) for row in rows]
 
 
 @router.post("/text2image")
@@ -99,6 +108,9 @@ def create_node(body: ComputeNodeCreate, db: Session = Depends(get_db)):
         type=body.type,
         base_url=body.base_url,
         token=body.token,
+        provider=body.provider,
+        api_key=body.api_key,
+        model=body.model,
         priority=body.priority,
         is_active=body.is_active,
         capabilities=body.capabilities,
@@ -106,18 +118,7 @@ def create_node(body: ComputeNodeCreate, db: Session = Depends(get_db)):
     db.add(row)
     db.commit()
     db.refresh(row)
-    return {
-        'id': row.id,
-        'name': row.name,
-        'type': row.type,
-        'base_url': row.base_url,
-        'token': row.token,
-        'priority': row.priority,
-        'is_active': row.is_active,
-        'capabilities': row.capabilities,
-        'last_status': row.last_status,
-        'created_at': str(row.created_at),
-    }
+    return _node_payload(row)
 
 
 @router.put('/nodes/{node_id}', tags=['nodes'])
@@ -129,18 +130,7 @@ def update_node(node_id: int, body: ComputeNodeUpdate, db: Session = Depends(get
         setattr(row, field, value)
     db.commit()
     db.refresh(row)
-    return {
-        'id': row.id,
-        'name': row.name,
-        'type': row.type,
-        'base_url': row.base_url,
-        'token': row.token,
-        'priority': row.priority,
-        'is_active': row.is_active,
-        'capabilities': row.capabilities,
-        'last_status': row.last_status,
-        'updated_at': str(row.updated_at),
-    }
+    return _node_payload(row)
 
 
 @router.delete('/nodes/{node_id}', tags=['nodes'])
@@ -162,4 +152,5 @@ async def test_node(node_id: int, db: Session = Depends(get_db)):
     online = await node.health()
     row.last_status = 'online' if online else 'offline'
     db.commit()
-    return {'id': node_id, 'online': online, 'type': row.type, 'base_url': row.base_url}
+    error = None if online else getattr(node, "last_error", None) or "节点不可达或鉴权失败"
+    return {'id': node_id, 'online': online, 'type': row.type, 'base_url': row.base_url, 'error': error}

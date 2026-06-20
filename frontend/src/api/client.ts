@@ -214,6 +214,45 @@ export async function getComputeHealth(): Promise<{ type: string; base_url: stri
   return r.json();
 }
 
+export type ComputeNodeType = "local_comfy" | "remote_comfy" | "cloud_api";
+
+export interface ComputeNodeRecord {
+  id: number;
+  name: string;
+  type: ComputeNodeType;
+  base_url: string;
+  provider: string | null;
+  model: string | null;
+  priority: number;
+  is_active: boolean;
+  capabilities: string | null;
+  last_status: "online" | "offline" | null;
+  token_configured: boolean;
+  api_key_configured: boolean;
+  api_key_masked: string | null;
+}
+
+export interface ComputeNodeInput {
+  name: string;
+  type: ComputeNodeType;
+  base_url: string;
+  token?: string;
+  provider?: string;
+  api_key?: string;
+  model?: string;
+  priority: number;
+  is_active: boolean;
+  capabilities?: string;
+}
+
+export interface ComputeNodeTestResult {
+  id: number;
+  online: boolean;
+  type: ComputeNodeType;
+  base_url: string;
+  error: string | null;
+}
+
 export interface ScriptDraftResponse {
   status: number;
   script?: string;
@@ -312,13 +351,57 @@ export interface AssetGenerationResult {
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await apiFetch(url, init);
-  const data = await response.json();
+  let response: Response;
+  try {
+    response = await apiFetch(url, init);
+  } catch {
+    throw new Error("无法连接后端服务");
+  }
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    data = {};
+  }
   if (!response.ok) {
-    const message = data.message ?? data.detail?.message ?? data.detail ?? "请求失败";
+    const body = data && typeof data === "object" ? data as Record<string, unknown> : {};
+    const detail = body.detail;
+    const detailObject = detail && typeof detail === "object" ? detail as Record<string, unknown> : {};
+    const message = body.message ?? detailObject.message ?? detail ?? "请求失败";
     throw new Error(typeof message === "string" ? message : "请求失败");
   }
-  return data;
+  return data as T;
+}
+
+export function listComputeNodes(): Promise<ComputeNodeRecord[]> {
+  return jsonRequest("/compute/nodes");
+}
+
+export function createComputeNode(body: ComputeNodeInput): Promise<ComputeNodeRecord> {
+  return jsonRequest("/compute/nodes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateComputeNode(
+  id: number,
+  body: Partial<ComputeNodeInput>,
+): Promise<ComputeNodeRecord> {
+  return jsonRequest(`/compute/nodes/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteComputeNode(id: number): Promise<{ deleted: boolean }> {
+  return jsonRequest(`/compute/nodes/${id}`, { method: "DELETE" });
+}
+
+export function testComputeNode(id: number): Promise<ComputeNodeTestResult> {
+  return jsonRequest(`/compute/nodes/${id}/test`, { method: "POST" });
 }
 
 export function listArtStyles(): Promise<ArtStyle[]> {

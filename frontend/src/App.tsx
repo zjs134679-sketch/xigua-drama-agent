@@ -44,10 +44,11 @@ import ScriptView from "./components/ScriptView";
 import ArtStylesView from "./features/ArtStylesView";
 import AuthView from "./features/AuthView";
 import CharacterAssetsView from "./features/CharacterAssetsView";
+import ComputeNodesView from "./features/ComputeNodesView";
 import SponsorDialog from "./features/SponsorDialog";
 import TimelineView from "./features/TimelineView";
 
-type ViewId = "storyboard" | "script" | "characters" | "art-styles" | "timeline";
+type ViewId = "storyboard" | "script" | "characters" | "art-styles" | "timeline" | "compute";
 
 function WatermelonLogo({ size = 22 }: { size?: number }) {
   return (
@@ -67,7 +68,7 @@ const RAIL: { icon: typeof Folder; label: string; view?: ViewId }[] = [
   { icon: Palette, label: "画风库", view: "art-styles" },
   { icon: LayoutGrid, label: "分镜", view: "storyboard" },
   { icon: Film, label: "成片", view: "timeline" },
-  { icon: Server, label: "算力" },
+  { icon: Server, label: "算力", view: "compute" },
 ];
 
 const SHOTS = [
@@ -267,7 +268,7 @@ export default function App() {
           <button className="rail-btn" title="设置"><Settings size={19} /></button>
         </div>
 
-        {view === "script" ? <ScriptView username={user.username} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : (
+        {view === "script" ? <ScriptView username={user.username} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : view === "compute" ? <ComputeNodesView /> : (
           <>
             {/* 中部 */}
             <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>

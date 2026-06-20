@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.system import ComputeNode as ComputeNodeRow
 from app.services.compute.base import ComputeNode
+from app.services.compute.cloud_api import CloudApiNode
 from app.services.compute.local_comfy import LocalComfyNode
 from app.services.compute.remote_comfy import RemoteComfyNode
 
@@ -14,7 +15,8 @@ from app.services.compute.remote_comfy import RemoteComfyNode
 def build_node(row: ComputeNodeRow) -> ComputeNode:
     if row.type == "remote_comfy":
         return RemoteComfyNode(row.base_url, row.token)
-    # cloud_api 待 M7 实现；目前未知类型按本地处理
+    if row.type == "cloud_api":
+        return CloudApiNode(row.provider or "", row.base_url, row.api_key, row.model, row.token)
     return LocalComfyNode(row.base_url, row.token)
 
 

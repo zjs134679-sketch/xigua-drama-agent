@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import random
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlparse
 
 import httpx
 
@@ -92,6 +94,57 @@ class LocalComfyNode(ComputeNode):
         return f"{self.base_url}/view?{q}"
 
     @staticmethod
+    def _reference_label(source: str) -> str:
+        parsed = urlparse(source)
+        if parsed.scheme in {"http", "https"}:
+            return Path(unquote(parsed.path)).name or parsed.netloc
+        return Path(source).name or "未命名文件"
+
+    async def _read_reference(
+        self,
+        client: httpx.AsyncClient,
+        source: str,
+    ) -> tuple[str, bytes, str]:
+        parsed = urlparse(source)
+        if parsed.scheme in {"http", "https"}:
+            response = await client.get(source)
+            response.raise_for_status()
+            filename = Path(unquote(parsed.path)).name or f"{uuid.uuid4().hex}.png"
+            content_type = response.headers.get("content-type", "").split(";", 1)[0]
+            mime = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            return filename, response.content, mime
+
+        path = Path(source).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"参考图文件不存在: {self._reference_label(source)}")
+        return path.name, path.read_bytes(), mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+    async def _upload_reference_images(
+        self,
+        client: httpx.AsyncClient,
+        sources: list[str],
+    ) -> list[str]:
+        uploaded: list[str] = []
+        for index, source in enumerate(sources, start=1):
+            label = self._reference_label(source)
+            try:
+                filename, content, mime = await self._read_reference(client, source)
+                response = await client.post(
+                    f"{self.base_url}/upload/image",
+                    headers=self._headers(),
+                    files={"image": (filename, content, mime)},
+                    data={"overwrite": "true"},
+                )
+                response.raise_for_status()
+                name = response.json().get("name")
+                if not isinstance(name, str) or not name:
+                    raise ValueError("ComfyUI 未返回上传文件名")
+                uploaded.append(name)
+            except (OSError, ValueError, httpx.HTTPError) as exc:
+                raise RuntimeError(f"第 {index} 张参考图上传失败（{label}）: {exc}") from exc
+        return uploaded
+
+    @staticmethod
     def _first_image(outputs: dict) -> dict | None:
         for out in outputs.values():
             for img in out.get("images", []) or []:
@@ -110,7 +163,7 @@ class LocalComfyNode(ComputeNode):
 
     async def text2image(self, job: ImageJob) -> JobResult:
         try:
-            wf = self._inject(self._load_workflow(job.workflow), job)
+            wf = self._load_workflow(job.workflow)
         except FileNotFoundError:
             return JobResult("failed", error=f"工作流模板不存在: {job.workflow}")
         except Exception as e:  # noqa: BLE001
@@ -118,7 +171,14 @@ class LocalComfyNode(ComputeNode):
 
         client_id = uuid.uuid4().hex
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0)) as c:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(900.0, connect=10.0),
+                follow_redirects=True,
+            ) as c:
+                if job.reference_images:
+                    uploaded = await self._upload_reference_images(c, job.reference_images)
+                    job = replace(job, reference_images=uploaded)
+                wf = self._inject(wf, job)
                 r = await c.post(
                     f"{self.base_url}/prompt",
                     json={"prompt": wf, "client_id": client_id},
@@ -151,5 +211,8 @@ class LocalComfyNode(ComputeNode):
         except httpx.HTTPError as e:
             logger.warning("ComfyUI 请求失败: %s", e)
             return JobResult("failed", error=f"连接 ComfyUI 失败: {e}")
+        except RuntimeError as e:
+            logger.warning("ComfyUI 参考图上传失败: %s", e)
+            return JobResult("failed", error=str(e))
         except Exception as e:  # noqa: BLE001
             return JobResult("failed", error=f"{type(e).__name__}: {e}")

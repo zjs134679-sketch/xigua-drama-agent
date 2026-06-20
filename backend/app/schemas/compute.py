@@ -19,6 +19,9 @@ class ComputeNodeCreate(BaseModel):
     type: str
     base_url: str
     token: str | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    model: str | None = None
     priority: int = 100
     is_active: bool = True
     capabilities: str | None = None
@@ -29,6 +32,9 @@ class ComputeNodeUpdate(BaseModel):
     type: str | None = None
     base_url: str | None = None
     token: str | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    model: str | None = None
     priority: int | None = None
     is_active: bool | None = None
     capabilities: str | None = None
