@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
 from app.models.domain import Episode, Storyboard
-from app.schemas.storyboard import StoryboardGenerateRequest, StoryboardImageRequest
+from app.schemas.storyboard import (
+    StoryboardGenerateRequest,
+    StoryboardImageRequest,
+    StoryboardPromptUpdate,
+)
 from app.services.agents.storyboard_agent import break_storyboards, save_storyboards
 from app.services.asset_generation import (
     AssetGenerationError,
@@ -133,6 +137,17 @@ def _outcome_view(outcome: GenerationOutcome) -> dict:
     }
 
 
+@router.patch("/{storyboard_id}")
+def update_storyboard_prompt(storyboard_id: int, body: StoryboardPromptUpdate, db: Session = Depends(get_db)) -> dict:
+    sb = db.get(Storyboard, storyboard_id)
+    if sb is None or sb.deleted_at is not None:
+        raise HTTPException(404, "分镜不存在")
+    sb.image_prompt = body.image_prompt
+    db.commit()
+    db.refresh(sb)
+    return storyboard_view(sb)
+
+
 @router.post("/{storyboard_id}/image")
 async def storyboard_image(storyboard_id: int, body: StoryboardImageRequest, db: Session = Depends(get_db)):
     ensure_active_user(db, body.username)
@@ -140,6 +155,7 @@ async def storyboard_image(storyboard_id: int, body: StoryboardImageRequest, db:
         outcome = await generate_storyboard_image(
             db,
             storyboard_id=storyboard_id,
+            full_prompt=body.prompt,
             art_style_id=body.art_style_id,
             username=body.username,
         )

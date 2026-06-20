@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Image as ImageIcon, Layers, Loader2, Wand2 } from "lucide-react";
+import { AlertTriangle, Image as ImageIcon, Layers, Loader2, Save, Wand2 } from "lucide-react";
 import {
   generateStoryboardImage,
   generateStoryboards,
   listStoryboards,
+  updateStoryboardPrompt,
   type ComplianceHit,
   type EpisodeSummary,
   type Project,
@@ -24,16 +25,39 @@ export default function StoryboardView({
   const [loading, setLoading] = useState(false);
   const [breaking, setBreaking] = useState(false);
   const [imaging, setImaging] = useState<number | null>(null);
+  const [saving, setSaving] = useState<number | null>(null);
+  const [prompts, setPrompts] = useState<Record<number, string>>({});
   const [err, setErr] = useState<{ message?: string; hits?: ComplianceHit[]; level?: string } | null>(null);
+
+  const seedPrompts = (rows: Storyboard[]) =>
+    setPrompts(() => {
+      const next: Record<number, string> = {};
+      rows.forEach((s) => { next[s.id] = s.image_prompt ?? ""; });
+      return next;
+    });
 
   const load = async (epId: number) => {
     setLoading(true);
     try {
-      setShots(await listStoryboards(epId));
+      const rows = await listStoryboards(epId);
+      setShots(rows);
+      seedPrompts(rows);
     } catch {
       /* ignore */
     } finally {
       setLoading(false);
+    }
+  };
+
+  const savePrompt = async (sb: Storyboard) => {
+    setSaving(sb.id);
+    setErr(null);
+    try {
+      await updateStoryboardPrompt(sb.id, prompts[sb.id] ?? "");
+    } catch {
+      setErr({ message: "保存提示词失败" });
+    } finally {
+      setSaving(null);
     }
   };
 
@@ -52,6 +76,7 @@ export default function StoryboardView({
       const res = await generateStoryboards(episode.id, username);
       if (res.status === 200 && res.storyboards) {
         setShots(res.storyboards);
+        seedPrompts(res.storyboards);
       } else {
         setErr({ message: res.message, hits: res.hits, level: res.level });
         if (res.banned) onBanned?.();
@@ -67,7 +92,7 @@ export default function StoryboardView({
     setImaging(sb.id);
     setErr(null);
     try {
-      const res = await generateStoryboardImage(sb.id, username);
+      const res = await generateStoryboardImage(sb.id, username, undefined, prompts[sb.id] ?? undefined);
       if (res.status === 200 && res.image_url) {
         setShots((prev) => prev.map((s) => (s.id === sb.id ? { ...s, image_url: res.image_url ?? null, status: "image_done" } : s)));
       } else {
@@ -149,10 +174,27 @@ export default function StoryboardView({
                     {[s.shot_type, s.location, s.duration ? `${s.duration}s` : null].filter(Boolean).join(" · ")}
                   </div>
                   {s.action && <div style={{ fontSize: 11, color: "var(--text2)", lineHeight: 1.4 }}>{s.action}</div>}
-                  <div style={{ marginTop: "auto" }}>
+                  <label style={{ fontSize: 10.5, color: "var(--text3)", marginTop: 2 }}>画面提示词（可编辑）</label>
+                  <textarea
+                    value={prompts[s.id] ?? ""}
+                    onChange={(e) => setPrompts((p) => ({ ...p, [s.id]: e.target.value }))}
+                    rows={3}
+                    style={{ resize: "vertical", fontSize: 11, lineHeight: 1.45 }}
+                    placeholder="这个镜头的画面提示词…"
+                  />
+                  <div style={{ marginTop: "auto", display: "flex", gap: 6 }}>
                     <button
                       className="btn-secondary"
-                      style={{ width: "100%", padding: "5px 10px", opacity: imaging === s.id ? 0.7 : 1 }}
+                      style={{ flex: "none", padding: "5px 9px", opacity: saving === s.id ? 0.7 : 1 }}
+                      onClick={() => savePrompt(s)}
+                      disabled={saving === s.id}
+                      title="只保存提示词，不出图"
+                    >
+                      {saving === s.id ? <Loader2 size={12} className="spin" /> : <Save size={12} />}
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      style={{ flex: 1, padding: "5px 10px", opacity: imaging === s.id ? 0.7 : 1 }}
                       onClick={() => makeImage(s)}
                       disabled={imaging === s.id}
                     >

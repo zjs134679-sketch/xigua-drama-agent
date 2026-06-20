@@ -136,7 +136,7 @@ async def generate_character_asset(
     db: Session,
     *,
     character_id: int | None = None,
-    custom_prompt: str | None = None,
+    full_prompt: str | None = None,
     art_style_id: int | None = None,
     username: str | None = None,
     scene_id: int | None = None,
@@ -155,7 +155,17 @@ async def generate_character_asset(
     consistent = bool(character_ref and scene_ref)
     workflow = KONTEXT_WORKFLOW if consistent else FLUX_WORKFLOW
     references = [scene_ref, character_ref] if consistent else []
-    prompt = build_character_prompt(character, custom_prompt, style, scene, action, consistent)
+
+    # 提示词优先级：用户传入的完整提示词 > 已存可编辑提示词 > 自动拼接
+    if full_prompt and full_prompt.strip():
+        prompt = full_prompt.strip()
+    elif character is not None and character.image_prompt and character.image_prompt.strip():
+        prompt = character.image_prompt.strip()
+    else:
+        prompt = build_character_prompt(character, None, style, scene, action, consistent)
+    if character is not None:
+        character.image_prompt = prompt  # 持久化，供前端展示/再编辑
+
     return await _generate(
         db,
         prompt=prompt,
@@ -173,12 +183,15 @@ async def generate_storyboard_image(
     db: Session,
     *,
     storyboard_id: int,
+    full_prompt: str | None = None,
     art_style_id: int | None = None,
     username: str | None = None,
 ) -> GenerationOutcome:
     sb = db.get(Storyboard, storyboard_id)
     if sb is None or sb.deleted_at is not None:
         raise LookupError("分镜不存在")
+    if full_prompt and full_prompt.strip():
+        sb.image_prompt = full_prompt.strip()  # 持久化用户编辑的提示词
     if not (sb.image_prompt and sb.image_prompt.strip()):
         raise AssetGenerationError("该分镜没有画面提示词，请先生成分镜")
     style = _style(db, art_style_id)
@@ -219,7 +232,7 @@ async def generate_scene_asset(
     db: Session,
     *,
     scene_id: int | None = None,
-    custom_prompt: str | None = None,
+    full_prompt: str | None = None,
     art_style_id: int | None = None,
     username: str | None = None,
 ) -> GenerationOutcome:
@@ -227,7 +240,16 @@ async def generate_scene_asset(
     if scene_id is not None and (scene is None or scene.deleted_at is not None):
         raise LookupError("场景不存在")
     style = _style(db, art_style_id)
-    prompt = build_scene_prompt(scene, custom_prompt, style)
+
+    if full_prompt and full_prompt.strip():
+        prompt = full_prompt.strip()
+    elif scene is not None and scene.prompt and scene.prompt.strip():
+        prompt = scene.prompt.strip()
+    else:
+        prompt = build_scene_prompt(scene, None, style)
+    if scene is not None:
+        scene.prompt = prompt  # 持久化可编辑提示词
+
     return await _generate(
         db,
         prompt=prompt,

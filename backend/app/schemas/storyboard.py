@@ -10,5 +10,10 @@ class StoryboardGenerateRequest(BaseModel):
 
 
 class StoryboardImageRequest(BaseModel):
+    prompt: str | None = None          # 用户编辑的完整画面提示词（留空用已存）
     art_style_id: int | None = None
     username: str | None = None
+
+
+class StoryboardPromptUpdate(BaseModel):
+    image_prompt: str

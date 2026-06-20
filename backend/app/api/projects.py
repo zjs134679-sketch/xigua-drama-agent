@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
 from app.models.domain import Character, Drama, Episode, Prop, Scene
-from app.schemas.project import DramaCreate, EpisodeCreate, NovelImportRequest
+from app.schemas.project import (
+    AssetPromptUpdate,
+    DramaCreate,
+    EpisodeCreate,
+    NovelImportRequest,
+)
+from app.services.asset_generation import build_character_prompt
 from app.services.compliance import check, enforce
 from app.services.novel_split import split_novel
 
@@ -163,9 +169,21 @@ def list_characters(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
     ).all()
     return [
         {"id": c.id, "name": c.name, "role": c.role, "appearance": c.appearance,
-         "personality": c.personality, "description": c.description, "image_url": c.image_url}
+         "personality": c.personality, "description": c.description, "image_url": c.image_url,
+         # 可编辑出图提示词：已存优先，否则给一个可改的自动建议
+         "image_prompt": c.image_prompt or build_character_prompt(c, None, None)}
         for c in rows
     ]
+
+
+@router.patch("/characters/{character_id}")
+def update_character_prompt(character_id: int, body: AssetPromptUpdate, db: Session = Depends(get_db)) -> dict:
+    c = db.get(Character, character_id)
+    if c is None or c.deleted_at is not None:
+        raise HTTPException(404, "角色不存在")
+    c.image_prompt = body.prompt
+    db.commit()
+    return {"id": c.id, "image_prompt": c.image_prompt}
 
 
 @router.get("/{drama_id}/scenes")
@@ -178,6 +196,16 @@ def list_scenes(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
          "status": s.status, "image_url": s.image_url}
         for s in rows
     ]
+
+
+@router.patch("/scenes/{scene_id}")
+def update_scene_prompt(scene_id: int, body: AssetPromptUpdate, db: Session = Depends(get_db)) -> dict:
+    s = db.get(Scene, scene_id)
+    if s is None or s.deleted_at is not None:
+        raise HTTPException(404, "场景不存在")
+    s.prompt = body.prompt
+    db.commit()
+    return {"id": s.id, "prompt": s.prompt}
 
 
 @router.get("/{drama_id}/props")

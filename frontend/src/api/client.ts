@@ -387,6 +387,7 @@ export interface CharacterAsset {
   role: string | null;
   appearance: string | null;
   image_url: string | null;
+  image_prompt: string | null;
 }
 
 export interface AssetGenerationResult {
@@ -526,12 +527,30 @@ export function listCharacters(projectId: number): Promise<CharacterAsset[]> {
 
 export function generateCharacterAsset(body: {
   character_id: number;
+  prompt?: string;
   art_style_id?: number;
+  username?: string;
 }): Promise<AssetGenerationResult> {
   return jsonRequest("/assets/character/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+export function updateCharacterPrompt(characterId: number, prompt: string): Promise<{ id: number; image_prompt: string }> {
+  return jsonRequest(`/projects/characters/${characterId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+export function updateScenePrompt(sceneId: number, prompt: string): Promise<{ id: number; prompt: string }> {
+  return jsonRequest(`/projects/scenes/${sceneId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
   });
 }
 
@@ -550,7 +569,9 @@ export function listScenes(projectId: number): Promise<SceneAsset[]> {
 
 export function generateSceneAsset(body: {
   scene_id: number;
+  prompt?: string;
   art_style_id?: number;
+  username?: string;
 }): Promise<AssetGenerationResult> {
   return jsonRequest("/assets/scene/generate", {
     method: "POST",
@@ -706,15 +727,24 @@ export async function generateStoryboards(episodeId: number, username = "local")
   return { status: r.status, message: typeof detail === "string" ? detail : "分镜生成失败" };
 }
 
+export function updateStoryboardPrompt(storyboardId: number, imagePrompt: string): Promise<Storyboard> {
+  return jsonRequest(`/storyboard/${storyboardId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_prompt: imagePrompt }),
+  });
+}
+
 export async function generateStoryboardImage(
   storyboardId: number,
   username = "local",
   artStyleId?: number,
+  prompt?: string,
 ): Promise<StoryboardImageResult> {
   const r = await apiFetch(`/storyboard/${storyboardId}/image`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, art_style_id: artStyleId ?? null }),
+    body: JSON.stringify({ username, art_style_id: artStyleId ?? null, prompt: prompt ?? null }),
   });
   const data = await r.json();
   if (r.ok) return { status: r.status, image_url: data.image_url, warn: data.warn, hits: data.warn_hits };

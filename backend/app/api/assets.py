@@ -125,7 +125,7 @@ async def generate_character(body: CharacterGenerateRequest, db: Session = Depen
         outcome = await generate_character_asset(
             db,
             character_id=body.character_id,
-            custom_prompt=body.prompt,
+            full_prompt=body.prompt,
             art_style_id=body.art_style_id,
             username=body.username,
             scene_id=body.scene_id,
@@ -143,7 +143,7 @@ async def generate_scene(body: SceneGenerateRequest, db: Session = Depends(get_d
         outcome = await generate_scene_asset(
             db,
             scene_id=body.scene_id,
-            custom_prompt=body.prompt,
+            full_prompt=body.prompt,
             art_style_id=body.art_style_id,
             username=body.username,
         )

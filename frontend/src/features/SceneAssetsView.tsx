@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Image, LoaderCircle, Mountain, Sparkles, Wand2 } from "lucide-react";
+import { AlertTriangle, Image, LoaderCircle, Mountain, Save, Sparkles, Wand2 } from "lucide-react";
 import {
   extractFromEpisode,
   generateSceneAsset,
   listArtStyles,
   listProjects,
   listScenes,
+  updateScenePrompt,
   type ArtStyle,
   type Project,
   type SceneAsset,
@@ -27,6 +28,8 @@ export default function SceneAssetsView({
   const [styleId, setStyleId] = useState<number | undefined>();
   const [generating, setGenerating] = useState<number | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [saving, setSaving] = useState<number | null>(null);
+  const [prompts, setPrompts] = useState<Record<number, string>>({});
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -41,17 +44,51 @@ export default function SceneAssetsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDramaId]);
 
-  const loadScenes = (id: number) => listScenes(id).then(setScenes).catch((e: Error) => setNotice(e.message));
+  const loadScenes = (id: number) =>
+    listScenes(id)
+      .then((rows) => {
+        setScenes(rows);
+        setPrompts((prev) => {
+          const next = { ...prev };
+          rows.forEach((s) => {
+            if (next[s.id] === undefined) next[s.id] = s.prompt ?? "";
+          });
+          return next;
+        });
+      })
+      .catch((e: Error) => setNotice(e.message));
   useEffect(() => {
     if (projectId != null) loadScenes(projectId);
   }, [projectId]);
+
+  const savePrompt = async (scene: SceneAsset) => {
+    setSaving(scene.id);
+    setNotice("");
+    try {
+      await updateScenePrompt(scene.id, prompts[scene.id] ?? "");
+      setNotice(`已保存「${scene.location ?? "场景"}」的提示词`);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setSaving(null);
+    }
+  };
 
   const generate = async (scene: SceneAsset) => {
     setGenerating(scene.id);
     setNotice("");
     try {
-      const result = await generateSceneAsset({ scene_id: scene.id, art_style_id: styleId });
-      setNotice(result.warn ? "场景图已生成，提示词包含需关注内容。" : "场景图生成完成。");
+      const result = await generateSceneAsset({
+        scene_id: scene.id,
+        prompt: prompts[scene.id] ?? undefined,
+        art_style_id: styleId,
+        username,
+      });
+      if (result.blocked) {
+        setNotice(`红线拦截：${result.message ?? "提示词触发红线"}`);
+      } else {
+        setNotice(result.warn ? "场景图已生成，提示词包含需关注内容。" : "场景图生成完成。");
+      }
       if (projectId != null) await loadScenes(projectId);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "生成失败");
@@ -111,11 +148,23 @@ export default function SceneAssetsView({
               <div className="asset-content">
                 <strong>{scene.location || "未命名场景"}</strong>
                 <span>{scene.time || "未设置时间"}</span>
-                <p>{scene.prompt || "暂无背景提示词"}</p>
-                <button className="btn-secondary" disabled={generating != null} onClick={() => generate(scene)}>
-                  {generating === scene.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                  {scene.image_url ? "重新生成" : "生成场景图"}
-                </button>
+                <label style={{ fontSize: 11, color: "var(--text3)" }}>背景提示词（可编辑）</label>
+                <textarea
+                  value={prompts[scene.id] ?? ""}
+                  onChange={(e) => setPrompts((p) => ({ ...p, [scene.id]: e.target.value }))}
+                  rows={4}
+                  style={{ resize: "vertical", fontSize: 12, lineHeight: 1.5 }}
+                  placeholder="描述这个场景的纯背景画面提示词…"
+                />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="btn-secondary" style={{ flex: "none", padding: "5px 10px" }} disabled={saving != null} onClick={() => savePrompt(scene)} title="只保存提示词，不出图">
+                    {saving === scene.id ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} 保存
+                  </button>
+                  <button className="btn-secondary" style={{ flex: 1 }} disabled={generating != null} onClick={() => generate(scene)}>
+                    {generating === scene.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+                    {scene.image_url ? "重新生成" : "生成场景图"}
+                  </button>
+                </div>
               </div>
             </article>
           ))}

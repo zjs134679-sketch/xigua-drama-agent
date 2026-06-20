@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Image, LoaderCircle, Sparkles, Users, Wand2 } from "lucide-react";
+import { AlertTriangle, Image, LoaderCircle, Save, Sparkles, Users, Wand2 } from "lucide-react";
 import {
   extractFromEpisode,
   generateCharacterAsset,
   listArtStyles,
   listCharacters,
   listProjects,
+  updateCharacterPrompt,
   type ArtStyle,
   type CharacterAsset,
   type Project,
@@ -27,6 +28,8 @@ export default function CharacterAssetsView({
   const [styleId, setStyleId] = useState<number | undefined>();
   const [generating, setGenerating] = useState<number | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [saving, setSaving] = useState<number | null>(null);
+  const [prompts, setPrompts] = useState<Record<number, string>>({});
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -41,17 +44,51 @@ export default function CharacterAssetsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDramaId]);
 
-  const loadCharacters = (id: number) => listCharacters(id).then(setCharacters).catch((e: Error) => setNotice(e.message));
+  const loadCharacters = (id: number) =>
+    listCharacters(id)
+      .then((rows) => {
+        setCharacters(rows);
+        setPrompts((prev) => {
+          const next = { ...prev };
+          rows.forEach((c) => {
+            if (next[c.id] === undefined) next[c.id] = c.image_prompt ?? "";
+          });
+          return next;
+        });
+      })
+      .catch((e: Error) => setNotice(e.message));
   useEffect(() => {
     if (projectId != null) loadCharacters(projectId);
   }, [projectId]);
+
+  const savePrompt = async (character: CharacterAsset) => {
+    setSaving(character.id);
+    setNotice("");
+    try {
+      await updateCharacterPrompt(character.id, prompts[character.id] ?? "");
+      setNotice(`已保存「${character.name}」的提示词`);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setSaving(null);
+    }
+  };
 
   const generate = async (character: CharacterAsset) => {
     setGenerating(character.id);
     setNotice("");
     try {
-      const result = await generateCharacterAsset({ character_id: character.id, art_style_id: styleId });
-      setNotice(result.warn ? "素材已生成，提示词包含需关注内容。" : "素材生成完成。 ");
+      const result = await generateCharacterAsset({
+        character_id: character.id,
+        prompt: prompts[character.id] ?? undefined, // 用编辑后的提示词出图
+        art_style_id: styleId,
+        username,
+      });
+      if (result.blocked) {
+        setNotice(`红线拦截：${result.message ?? "提示词触发红线"}`);
+      } else {
+        setNotice(result.warn ? "素材已生成，提示词包含需关注内容。" : "素材生成完成。");
+      }
       if (projectId != null) await loadCharacters(projectId);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "生成失败");
@@ -111,11 +148,23 @@ export default function CharacterAssetsView({
               <div className="asset-content">
                 <strong>{character.name}</strong>
                 <span>{character.role || "未设置角色类型"}</span>
-                <p>{character.appearance || "暂无外貌描述"}</p>
-                <button className="btn-secondary" disabled={generating != null} onClick={() => generate(character)}>
-                  {generating === character.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                  {character.image_url ? "重新生成" : "生成角色图"}
-                </button>
+                <label style={{ fontSize: 11, color: "var(--text3)" }}>出图提示词（可编辑）</label>
+                <textarea
+                  value={prompts[character.id] ?? ""}
+                  onChange={(e) => setPrompts((p) => ({ ...p, [character.id]: e.target.value }))}
+                  rows={4}
+                  style={{ resize: "vertical", fontSize: 12, lineHeight: 1.5 }}
+                  placeholder="描述这个角色的画面提示词…"
+                />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="btn-secondary" style={{ flex: "none", padding: "5px 10px" }} disabled={saving != null} onClick={() => savePrompt(character)} title="只保存提示词，不出图">
+                    {saving === character.id ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} 保存
+                  </button>
+                  <button className="btn-secondary" style={{ flex: 1 }} disabled={generating != null} onClick={() => generate(character)}>
+                    {generating === character.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+                    {character.image_url ? "重新生成" : "生成角色图"}
+                  </button>
+                </div>
               </div>
             </article>
           ))}
