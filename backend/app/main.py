@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.compliance import router as compliance_router
+from app.api.assets import assets_router, styles_router
 from app.api.compute import router as compute_router
 from app.api.health import router as health_router
 from app.api.extract import router as extract_router
@@ -43,6 +44,8 @@ app.include_router(compute_router)
 app.include_router(projects_router)
 app.include_router(script_router)
 app.include_router(extract_router)
+app.include_router(styles_router)
+app.include_router(assets_router)
 
 
 @app.get("/")

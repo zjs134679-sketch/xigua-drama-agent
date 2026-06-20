@@ -12,6 +12,7 @@ import {
   LayoutGrid,
   List,
   Play,
+  Palette,
   Scissors,
   Server,
   Settings,
@@ -23,8 +24,10 @@ import {
 import { checkCompliance, getComputeHealth, type ComplianceResult } from "./api/client";
 import BanScreen from "./components/BanScreen";
 import ScriptView from "./components/ScriptView";
+import ArtStylesView from "./features/ArtStylesView";
+import CharacterAssetsView from "./features/CharacterAssetsView";
 
-type ViewId = "storyboard" | "script";
+type ViewId = "storyboard" | "script" | "characters" | "art-styles";
 
 function WatermelonLogo({ size = 22 }: { size?: number }) {
   return (
@@ -40,7 +43,8 @@ function WatermelonLogo({ size = 22 }: { size?: number }) {
 const RAIL: { icon: typeof Folder; label: string; view?: ViewId }[] = [
   { icon: Folder, label: "项目" },
   { icon: FileText, label: "剧本", view: "script" },
-  { icon: Users, label: "角色资产" },
+  { icon: Users, label: "角色资产", view: "characters" },
+  { icon: Palette, label: "画风库", view: "art-styles" },
   { icon: LayoutGrid, label: "分镜", view: "storyboard" },
   { icon: Film, label: "成片" },
   { icon: Server, label: "算力" },
@@ -123,9 +127,7 @@ export default function App() {
           <button className="rail-btn" title="设置"><Settings size={19} /></button>
         </div>
 
-        {view === "script" ? (
-          <ScriptView />
-        ) : (
+        {view === "script" ? <ScriptView /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : (
           <>
             {/* 中部 */}
             <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>

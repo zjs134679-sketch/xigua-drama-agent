@@ -319,3 +319,13 @@ class Asset(Base, TimestampMixin):
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ArtStyle(Base, TimestampMixin):
+    __tablename__ = "art_styles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_suffix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    lora: Mapped[str | None] = mapped_column(Text)
+    thumbnail: Mapped[str | None] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

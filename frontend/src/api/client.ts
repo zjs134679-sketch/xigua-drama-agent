@@ -50,3 +50,77 @@ export async function generateScriptDraft(content: string): Promise<ScriptDraftR
   }
   return { status: r.status, message: typeof detail === "string" ? detail : "生成失败" };
 }
+
+export interface ArtStyle {
+  id: number;
+  name: string;
+  prompt_suffix: string;
+  lora: string | null;
+  thumbnail: string | null;
+  sort_order: number;
+}
+
+export interface Project {
+  id: number;
+  title: string;
+}
+
+export interface CharacterAsset {
+  id: number;
+  name: string;
+  role: string | null;
+  appearance: string | null;
+  image_url: string | null;
+}
+
+export interface AssetGenerationResult {
+  status?: string;
+  asset_id?: number;
+  image_url?: string | null;
+  local_path?: string | null;
+  warn?: boolean;
+  warn_hits?: ComplianceHit[];
+  blocked?: boolean;
+  message?: string;
+}
+
+async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API}${url}`, init);
+  const data = await response.json();
+  if (!response.ok) {
+    const message = data.message ?? data.detail?.message ?? data.detail ?? "请求失败";
+    throw new Error(typeof message === "string" ? message : "请求失败");
+  }
+  return data;
+}
+
+export function listArtStyles(): Promise<ArtStyle[]> {
+  return jsonRequest("/art-styles");
+}
+
+export function createArtStyle(body: Omit<ArtStyle, "id">): Promise<ArtStyle> {
+  return jsonRequest("/art-styles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function listProjects(): Promise<Project[]> {
+  return jsonRequest("/projects");
+}
+
+export function listCharacters(projectId: number): Promise<CharacterAsset[]> {
+  return jsonRequest(`/projects/${projectId}/characters`);
+}
+
+export function generateCharacterAsset(body: {
+  character_id: number;
+  art_style_id?: number;
+}): Promise<AssetGenerationResult> {
+  return jsonRequest("/assets/character/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}

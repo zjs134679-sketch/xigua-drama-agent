@@ -5,6 +5,7 @@ from app.models.domain import (  # noqa: F401
     AiServiceConfig,
     AiServiceProvider,
     AiVoice,
+    ArtStyle,
     Asset,
     Character,
     Drama,

@@ -12,6 +12,9 @@ node_modules/
 dist/
 .vite/
 *.tsbuildinfo
+.npm-cache/
+.uv-cache/
+_update-notifier-last-checked
 
 # Rust / Tauri
 src-tauri/target/
