@@ -570,6 +570,84 @@ export async function exportTimeline(episodeId: number): Promise<TimelineExportR
   return data as TimelineExportResult;
 }
 
+// ===== 分镜 =====
+export interface Storyboard {
+  id: number;
+  episode_id: number;
+  storyboard_number: number;
+  title: string | null;
+  location: string | null;
+  time: string | null;
+  shot_type: string | null;
+  angle: string | null;
+  movement: string | null;
+  action: string | null;
+  dialogue: string | null;
+  atmosphere: string | null;
+  image_prompt: string | null;
+  duration: number;
+  image_url: string | null;
+  status: string;
+}
+
+export interface StoryboardGenResult {
+  status: number;
+  count?: number;
+  storyboards?: Storyboard[];
+  warn?: boolean;
+  level?: string;
+  message?: string;
+  hits?: ComplianceHit[];
+  banned?: boolean;
+}
+
+export interface StoryboardImageResult {
+  status: number;
+  image_url?: string | null;
+  warn?: boolean;
+  level?: string;
+  message?: string;
+  hits?: ComplianceHit[];
+  banned?: boolean;
+}
+
+export function listStoryboards(episodeId: number): Promise<Storyboard[]> {
+  return jsonRequest(`/storyboard?episode_id=${episodeId}`);
+}
+
+export async function generateStoryboards(episodeId: number, username = "local"): Promise<StoryboardGenResult> {
+  const r = await apiFetch("/storyboard/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ episode_id: episodeId, username }),
+  });
+  const data = await r.json();
+  if (r.ok) return { status: r.status, count: data.count, storyboards: data.storyboards, warn: data.warn };
+  const detail = data.detail;
+  if (detail && typeof detail === "object") {
+    return { status: r.status, level: detail.level, message: detail.message, hits: detail.hits, banned: detail.banned };
+  }
+  return { status: r.status, message: typeof detail === "string" ? detail : "分镜生成失败" };
+}
+
+export async function generateStoryboardImage(
+  storyboardId: number,
+  username = "local",
+  artStyleId?: number,
+): Promise<StoryboardImageResult> {
+  const r = await apiFetch(`/storyboard/${storyboardId}/image`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, art_style_id: artStyleId ?? null }),
+  });
+  const data = await r.json();
+  if (r.ok) return { status: r.status, image_url: data.image_url, warn: data.warn, hits: data.warn_hits };
+  if (r.status === 451) {
+    return { status: r.status, level: "red", message: data.message, hits: data.hits, banned: data.banned };
+  }
+  return { status: r.status, message: data.detail ?? data.error ?? "出图失败" };
+}
+
 // ===== 设置：LLM（编剧 / 分镜 Agent）=====
 export interface LLMConfig {
   configured: boolean;

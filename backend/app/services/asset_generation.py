@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.models.domain import ArtStyle, Asset, Character, Scene
+from app.models.domain import ArtStyle, Asset, Character, Episode, Scene, Storyboard
 from app.services.compliance import FilterResult, check
 from app.services.compliance import enforce
 from app.services.compute import ImageJob, JobResult, get_active_node
@@ -167,6 +167,52 @@ async def generate_character_asset(
         category="character",
         target=character,
     )
+
+
+async def generate_storyboard_image(
+    db: Session,
+    *,
+    storyboard_id: int,
+    art_style_id: int | None = None,
+    username: str | None = None,
+) -> GenerationOutcome:
+    sb = db.get(Storyboard, storyboard_id)
+    if sb is None or sb.deleted_at is not None:
+        raise LookupError("分镜不存在")
+    if not (sb.image_prompt and sb.image_prompt.strip()):
+        raise AssetGenerationError("该分镜没有画面提示词，请先生成分镜")
+    style = _style(db, art_style_id)
+    prompt = _parts(style.prompt_suffix if style else None, sb.image_prompt, PROTECTION_PROMPT)
+
+    compliance = check(prompt)
+    if compliance.blocked:
+        audit = enforce.record_violation(db, username, compliance, "image_prompt")
+        raise ComplianceBlocked(compliance, audit)
+
+    node = get_active_node(db)
+    result = await node.text2image(ImageJob(prompt=prompt, workflow=FLUX_WORKFLOW, reference_images=[]))
+    if result.status != "completed":
+        raise AssetGenerationError(result.error or "分镜出图失败")
+
+    episode = db.get(Episode, sb.episode_id)
+    asset = Asset(
+        drama_id=episode.drama_id if episode else None,
+        name=sb.title or f"分镜{sb.storyboard_number}",
+        description=prompt,
+        type="image",
+        category="storyboard",
+        url=result.image_url,
+        thumbnail_url=result.image_url,
+        local_path=result.image_path,
+        mime_type="image/png",
+        format="png",
+    )
+    db.add(asset)
+    sb.composed_image = result.image_url or result.image_path
+    sb.status = "image_done"
+    db.commit()
+    db.refresh(asset)
+    return GenerationOutcome(asset, result, compliance, prompt, FLUX_WORKFLOW)
 
 
 async def generate_scene_asset(

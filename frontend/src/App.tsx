@@ -48,6 +48,7 @@ import ComputeNodesView from "./features/ComputeNodesView";
 import ProjectView from "./features/ProjectView";
 import SettingsView from "./features/SettingsView";
 import SponsorDialog from "./features/SponsorDialog";
+import StoryboardView from "./features/StoryboardView";
 import TimelineView from "./features/TimelineView";
 import type { EpisodeSummary, Project } from "./api/client";
 
@@ -68,18 +69,6 @@ const RAIL: { icon: typeof Folder; label: string; view?: ViewId }[] = [
   { icon: Server, label: "算力", view: "compute" },
 ];
 
-const SHOTS = [
-  { no: "01", text: "雨夜 · 邮局门口 · 撑伞回望", dot: "var(--green)" },
-  { no: "02", text: "柜台前 · 女主递出旧信封", dot: "var(--blue)", active: true },
-  { no: "03", text: "回忆闪回 · 战火街道", dot: "var(--amber)", warn: true },
-];
-
-const TRACKS = [
-  { label: "视频", color: "#5B8DEF", segs: [34, 26, 22] },
-  { label: "配音", color: "#3FB58E", segs: [48, 30] },
-  { label: "字幕", color: "#D99A2B", segs: [20, 20, 20] },
-];
-
 export default function App() {
   const [view, setView] = useState<ViewId>("project");
   const [current, setCurrent] = useState<CurrentSelection>(null);
@@ -89,8 +78,6 @@ export default function App() {
   const sponsorShown = useRef(false);
   const [updateInfo, setUpdateInfo] = useState<VersionInfo | null>(null);
   const [online, setOnline] = useState<boolean | null>(null);
-  const [text, setText] = useState("柜台前，女主低头递出一封泛黄的旧信封，暖色灯光，电影质感");
-  const [result, setResult] = useState<ComplianceResult | null>(null);
   const [banned, setBanned] = useState(false);
   const [banReason, setBanReason] = useState<string | undefined>();
   const [dictionaryVersion, setDictionaryVersion] = useState<string | null>(null);
@@ -161,14 +148,6 @@ export default function App() {
       })
       .catch(() => undefined);
   }, [user]);
-
-  const runCheck = async () => {
-    try {
-      setResult(await checkCompliance(text));
-    } catch {
-      setResult(null);
-    }
-  };
 
   const handleAuthenticated = (session: AuthSession) => {
     if (session.user.banned) {
@@ -277,94 +256,7 @@ export default function App() {
             }}
           />
         ) : view === "script" ? <ScriptView username={user.username} current={current} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView /> : view === "compute" ? <ComputeNodesView /> : view === "settings" ? <SettingsView /> : (
-          <>
-            {/* 中部 */}
-            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
-                <span style={{ fontSize: 12, fontWeight: 500 }}>分镜台</span>
-                <span style={{ fontSize: 11, color: "var(--text3)" }}>12 个镜头</span>
-                <div style={{ flex: 1 }} />
-                <span className="pill" style={{ border: "1px solid var(--green)", color: "var(--green-t)" }}><Wand2 size={13} /> 一键生成</span>
-                <LayoutGrid size={15} color="var(--blue-t)" />
-                <List size={15} color="var(--text3)" />
-              </div>
-
-              <div style={{ padding: 12, display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-                {SHOTS.map((s) => (
-                  <div key={s.no} className="card" style={{ border: s.active ? "2px solid var(--blue)" : undefined }}>
-                    <div style={{ position: "relative", height: 76, background: "var(--surface)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <ImageIcon size={22} color="var(--text3)" />
-                      <span style={{ position: "absolute", left: 6, top: 6, fontSize: 11, padding: "1px 6px", borderRadius: 4, background: s.active ? "rgba(80,140,255,0.2)" : "var(--bg)", color: s.active ? "var(--blue-t)" : "var(--text2)" }}>镜头 {s.no}</span>
-                      <span style={{ position: "absolute", right: 6, top: 7, width: 7, height: 7, borderRadius: "50%", background: s.dot }} />
-                    </div>
-                    <p style={{ margin: 0, padding: "7px 8px", fontSize: 11, color: "var(--text2)", lineHeight: 1.4 }}>{s.text}</p>
-                    {s.warn && (
-                      <div style={{ padding: "0 8px 7px" }}>
-                        <span className="pill" style={{ background: "rgba(224,160,27,0.16)", color: "var(--amber)" }}><AlertTriangle size={12} /> 黄线提示</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", padding: "10px 12px", background: "var(--panel)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <Film size={14} color="var(--text2)" />
-                  <span style={{ fontSize: 11, color: "var(--text2)" }}>成片时间线</span>
-                  <span style={{ fontSize: 11, color: "var(--text3)" }}>00:42 / 02:10</span>
-                  <div style={{ flex: 1 }} />
-                  <SkipBack size={14} color="var(--text3)" />
-                  <Play size={15} color="var(--text)" />
-                  <Scissors size={14} color="var(--text3)" />
-                </div>
-                <div style={{ position: "relative" }}>
-                  {TRACKS.map((t) => (
-                    <div key={t.label} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                      <span style={{ width: 34, fontSize: 11, color: "var(--text3)", flex: "none" }}>{t.label}</span>
-                      <div style={{ flex: 1, height: 16, borderRadius: 4, background: "var(--surface)", display: "flex", gap: 3, padding: 2 }}>
-                        {t.segs.map((w, i) => (
-                          <div key={i} style={{ width: `${w}%`, background: t.color, borderRadius: 3 }} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                  <div style={{ position: "absolute", top: 0, bottom: 0, left: "46%", width: 2, background: "var(--red)" }} />
-                </div>
-              </div>
-            </div>
-
-            {/* Inspector：实时合规检测 */}
-            <div style={{ width: 230, flex: "none", borderLeft: "1px solid var(--border)", padding: 12, background: "var(--bg)", overflowY: "auto" }}>
-              <p style={{ fontSize: 11, color: "var(--text3)", margin: "0 0 2px" }}>当前镜头</p>
-              <p style={{ fontSize: 12, fontWeight: 500, margin: "0 0 10px" }}>镜头 02 · 属性</p>
-
-              <p style={{ fontSize: 11, color: "var(--text3)", margin: "0 0 4px" }}>绘画提示词（实时合规检测）</p>
-              <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} style={{ resize: "vertical", lineHeight: 1.5 }} />
-              <button className="btn-primary" style={{ marginTop: 8 }} onClick={runCheck}>检测并生成此镜头</button>
-
-              {result && (
-                <div style={{ marginTop: 10, padding: 8, borderRadius: 8, border: "1px solid var(--border2)", background: "var(--panel)" }}>
-                  {result.level === "red" && <div style={{ color: "var(--red-t)", fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}><AlertTriangle size={14} /> 红线 · 已硬拦截</div>}
-                  {result.level === "yellow" && <div style={{ color: "var(--amber)", fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}><AlertTriangle size={14} /> 黄线 · 建议替换</div>}
-                  {result.level === "pass" && <div style={{ color: "var(--green-t)", fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}><CheckCircle2 size={14} /> 通过 · 送算力生成</div>}
-                  {result.hits.length > 0 && (
-                    <div style={{ marginTop: 6, fontSize: 11, color: "var(--text2)" }}>
-                      命中：{result.hits.map((h) => `${h.word}(${h.category})`).join("、")}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div style={{ borderTop: "1px solid var(--border)", marginTop: 12, paddingTop: 10 }}>
-                {[["画风", "写实电影感"], ["模型", "Flux Kontext"], ["算力", "本地 ComfyUI"], ["时长", "5s"]].map(([k, v]) => (
-                  <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 6 }}>
-                    <span style={{ color: "var(--text3)" }}>{k}</span>
-                    <span style={{ color: "var(--text2)" }}>{v}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
+          <StoryboardView current={current} username={user.username} onBanned={() => setBanned(true)} />
         )}
       </div>
 
