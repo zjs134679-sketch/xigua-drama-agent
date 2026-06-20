@@ -26,6 +26,7 @@ backend/data/oss/
 auth-server/*.db
 # 真实词库（云端加密下发）严禁入仓
 backend/dict/*.local.txt
+auth-server/secret_dict/*.txt
 *.log
 .env
 .env.*

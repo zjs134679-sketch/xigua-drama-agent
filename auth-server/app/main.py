@@ -35,10 +35,28 @@ BAN_THRESHOLD = int(os.environ.get("XIGUA_BAN_THRESHOLD", "3"))
 LATEST_VERSION = os.environ.get("XIGUA_LATEST_VERSION", "0.1.0")
 DOWNLOAD_URL = os.environ.get("XIGUA_DOWNLOAD_URL", "")
 
-COMPLIANCE_DICTIONARY = {
+# 真实词库放在 gitignore 的 secret_dict/{red,yellow}.txt（每行一条，可用「词|分类」，# 开头为注释）。
+# 文件不存在则用占位词。真实敏感词永不入库、永不进仓库。
+_SECRET_DICT_DIR = BASE_DIR / "secret_dict"
+_PLACEHOLDER = {
     "red": ["云端占位红线词|演示", "云端占位禁用词|演示"],
     "yellow": ["云端占位黄线词|演示", "云端占位提醒词|演示"],
 }
+
+
+def _load_words(level: str) -> list[str]:
+    path = _SECRET_DICT_DIR / f"{level}.txt"
+    if not path.exists():
+        return _PLACEHOLDER[level]
+    words = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    return words or _PLACEHOLDER[level]
+
+
+COMPLIANCE_DICTIONARY = {"red": _load_words("red"), "yellow": _load_words("yellow")}
 _dictionary_json = json.dumps(
     COMPLIANCE_DICTIONARY,
     ensure_ascii=False,
