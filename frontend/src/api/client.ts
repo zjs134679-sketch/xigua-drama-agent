@@ -65,6 +65,14 @@ export interface Project {
   title: string;
 }
 
+export interface EpisodeSummary {
+  id: number;
+  drama_id: number;
+  episode_number: number;
+  title: string;
+  status: string;
+}
+
 export interface CharacterAsset {
   id: number;
   name: string;
@@ -110,6 +118,10 @@ export function listProjects(): Promise<Project[]> {
   return jsonRequest("/projects");
 }
 
+export function listEpisodes(projectId: number): Promise<EpisodeSummary[]> {
+  return jsonRequest(`/projects/${projectId}/episodes`);
+}
+
 export function listCharacters(projectId: number): Promise<CharacterAsset[]> {
   return jsonRequest(`/projects/${projectId}/characters`);
 }
@@ -123,4 +135,65 @@ export function generateCharacterAsset(body: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export type TimelineTrackName = "video" | "voiceover" | "subtitle" | "music";
+
+export interface TimelineClip {
+  storyboard_id: number | null;
+  index: number;
+  start: number;
+  duration: number;
+  video_url: string | null;
+  audio_url: string | null;
+  subtitle_text: string | null;
+  subtitle_url: string | null;
+  thumbnail: string | null;
+}
+
+export interface TimelineTrack {
+  enabled: boolean;
+  clips: TimelineClip[];
+}
+
+export interface TimelineDocument {
+  episode_id: number;
+  duration: number;
+  tracks: Record<TimelineTrackName, TimelineTrack>;
+}
+
+export interface TimelineExportResult {
+  status: "completed" | "failed" | "blocked";
+  merged_url?: string | null;
+  duration?: number;
+  error?: string | null;
+  blocked?: boolean;
+  storyboard_id?: number | null;
+  clip_index?: number;
+}
+
+export function getTimeline(episodeId: number): Promise<TimelineDocument> {
+  return jsonRequest(`/timeline/${episodeId}`);
+}
+
+export function saveTimeline(episodeId: number, timeline: TimelineDocument): Promise<TimelineDocument> {
+  return jsonRequest(`/timeline/${episodeId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tracks: timeline.tracks }),
+  });
+}
+
+export async function exportTimeline(episodeId: number): Promise<TimelineExportResult> {
+  const response = await fetch(`${API}/timeline/${episodeId}/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const data = await response.json();
+  if (response.status === 451) return data as TimelineExportResult;
+  if (!response.ok) {
+    return { status: "failed", merged_url: null, error: data.error ?? data.detail ?? "导出失败" };
+  }
+  return data as TimelineExportResult;
 }

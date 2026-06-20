@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.compliance import router as compliance_router
 from app.api.assets import assets_router, styles_router
@@ -13,6 +14,7 @@ from app.api.health import router as health_router
 from app.api.extract import router as extract_router
 from app.api.projects import router as projects_router
 from app.api.script import router as script_router
+from app.api.timeline import router as timeline_router
 from app.core.config import settings
 from app.core.db import init_db
 from app.core.logging import logger, setup_logging
@@ -46,6 +48,11 @@ app.include_router(script_router)
 app.include_router(extract_router)
 app.include_router(styles_router)
 app.include_router(assets_router)
+app.include_router(timeline_router)
+
+oss_dir = settings.data_dir / "oss"
+oss_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/oss", StaticFiles(directory=oss_dir), name="oss")
 
 
 @app.get("/")
