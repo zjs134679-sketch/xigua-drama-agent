@@ -341,6 +341,7 @@ export interface ArtStyle {
   lora: string | null;
   thumbnail: string | null;
   sort_order: number;
+  constraint_manual?: string | null;
 }
 
 export interface Project {
@@ -535,6 +536,14 @@ export function listArtStyles(): Promise<ArtStyle[]> {
 export function createArtStyle(body: Omit<ArtStyle, "id">): Promise<ArtStyle> {
   return jsonRequest("/art-styles", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateArtStyle(id: number, body: Partial<Omit<ArtStyle, "id">>): Promise<ArtStyle> {
+  return jsonRequest(`/art-styles/${id}`, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

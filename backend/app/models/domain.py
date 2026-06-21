@@ -331,3 +331,4 @@ class ArtStyle(Base, TimestampMixin):
     lora: Mapped[str | None] = mapped_column(Text)
     thumbnail: Mapped[str | None] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    constraint_manual: Mapped[str | None] = mapped_column(Text)  # 风格约束手册：出图时作硬性风格约束追加

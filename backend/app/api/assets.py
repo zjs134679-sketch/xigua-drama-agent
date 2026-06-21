@@ -37,6 +37,7 @@ def style_view(row: ArtStyle) -> dict:
         "lora": row.lora,
         "thumbnail": row.thumbnail,
         "sort_order": row.sort_order,
+        "constraint_manual": row.constraint_manual,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }

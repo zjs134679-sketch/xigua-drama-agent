@@ -320,7 +320,8 @@ async def generate_character_asset(
         character.view_type = view_type  # 记录本次出图视角
     # 始终把「纯背景/单人/无文字」追加到正向（flux cfg=1 负向无效），对所有提示词来源都生效
     view_hint = VIEW_TYPE_PROMPTS.get(view_type, VIEW_TYPE_PROMPTS["full_body"])
-    prompt = _parts(base_prompt, view_hint, CHARACTER_PORTRAIT_PROMPT, extra)
+    constraint = style.constraint_manual if (style and style.constraint_manual and not (full_prompt and full_prompt.strip())) else None
+    prompt = _parts(base_prompt, view_hint, CHARACTER_PORTRAIT_PROMPT, constraint, extra)
 
     return await _generate(
         db,
@@ -357,7 +358,8 @@ async def generate_storyboard_image(
     if not (sb.image_prompt and sb.image_prompt.strip()):
         raise AssetGenerationError("该分镜没有画面提示词，请先生成分镜")
     style = _style(db, art_style_id)
-    prompt = _parts(style.prompt_suffix if style else None, sb.image_prompt, PROTECTION_PROMPT, extra)
+    constraint = style.constraint_manual if (style and style.constraint_manual) else None
+    prompt = _parts(style.prompt_suffix if style else None, constraint, sb.image_prompt, PROTECTION_PROMPT, extra)
 
     compliance = check(prompt)
     if compliance.blocked:
@@ -444,7 +446,8 @@ async def generate_scene_asset(
         base_prompt = build_scene_prompt(scene, None, style)
     if scene is not None:
         scene.prompt = base_prompt  # 附加指令仅用于本次生成，不污染可编辑提示词
-    prompt = _parts(base_prompt, extra)
+    constraint = style.constraint_manual if (style and style.constraint_manual and not (full_prompt and full_prompt.strip())) else None
+    prompt = _parts(base_prompt, constraint, extra)
 
     return await _generate(
         db,
@@ -486,7 +489,8 @@ async def generate_prop_asset(
         base_prompt = build_prop_prompt(prop, None, style)
     if prop is not None:
         prop.prompt = base_prompt  # 附加指令仅用于本次生成，不污染可编辑提示词
-    prompt = _parts(base_prompt, extra)
+    constraint = style.constraint_manual if (style and style.constraint_manual and not (full_prompt and full_prompt.strip())) else None
+    prompt = _parts(base_prompt, constraint, extra)
 
     return await _generate(
         db,

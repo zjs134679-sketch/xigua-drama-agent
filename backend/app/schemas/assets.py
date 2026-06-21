@@ -9,6 +9,7 @@ class ArtStyleCreate(BaseModel):
     lora: str | None = None
     thumbnail: str | None = None
     sort_order: int = 0
+    constraint_manual: str | None = None
 
 
 class ArtStyleUpdate(BaseModel):
@@ -17,6 +18,7 @@ class ArtStyleUpdate(BaseModel):
     lora: str | None = None
     thumbnail: str | None = None
     sort_order: int | None = None
+    constraint_manual: str | None = None
 
 
 class CharacterGenerateRequest(BaseModel):
