@@ -141,6 +141,40 @@ def _outcome_view(outcome: GenerationOutcome) -> dict:
     }
 
 
+@router.post("/{storyboard_id}/image")
+async def storyboard_image(storyboard_id: int, body: StoryboardImageRequest, db: Session = Depends(get_db)):
+    """单镜出图（前端「出图」按钮 + 前端批量循环都走这个）。"""
+    ensure_active_user(db, body.username)
+    try:
+        outcome = await generate_storyboard_image(
+            db,
+            storyboard_id=storyboard_id,
+            full_prompt=body.prompt,
+            art_style_id=body.art_style_id,
+            username=body.username,
+            node_id=body.node_id,
+            resolution=body.resolution,
+            extra=body.extra,
+        )
+        return _outcome_view(outcome)
+    except ComplianceBlocked as exc:
+        return JSONResponse(
+            status_code=451,
+            content={
+                "blocked": True,
+                "level": "red",
+                "hits": [hit.__dict__ for hit in exc.result.hits],
+                "violation_count": exc.enforcement["violation_count"],
+                "banned": exc.enforcement["banned"],
+                "message": "画面提示词触发红线，已拦截并记录",
+            },
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except AssetGenerationError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 @router.patch("/{storyboard_id}")
 def update_storyboard_prompt(storyboard_id: int, body: StoryboardPromptUpdate, db: Session = Depends(get_db)) -> dict:
     sb = db.get(Storyboard, storyboard_id)
