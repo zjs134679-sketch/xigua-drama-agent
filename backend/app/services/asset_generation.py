@@ -18,7 +18,8 @@ FLUX_WORKFLOW = "flux-t2i.api.json"
 KONTEXT_WORKFLOW = "kontext-multiref.api.json"
 PROTECTION_PROMPT = "no text, no watermark, no logo"
 CHARACTER_PORTRAIT_PROMPT = (
-    "solo, single character, plain solid color background, clean simple background, character centered"
+    "solo, single character, isolated on a plain light gray background, "
+    "clean seamless light gray studio backdrop, neutral background, character centered"
 )
 CHARACTER_NEGATIVE_PROMPT = (
     "text, words, letters, characters, watermark, signature, logo, stamp, subtitles, UI, border, "
