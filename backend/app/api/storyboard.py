@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +14,9 @@ from app.api.user_state import ensure_active_user
 from app.core.db import get_db
 from app.models.domain import Episode, Storyboard
 from app.schemas.storyboard import (
+    BatchDeleteRequest,
+    BatchGenerateImageRequest,
+    BatchGeneratePromptRequest,
     StoryboardGenerateRequest,
     StoryboardImageRequest,
     StoryboardPromptUpdate,
@@ -148,31 +152,97 @@ def update_storyboard_prompt(storyboard_id: int, body: StoryboardPromptUpdate, d
     return storyboard_view(sb)
 
 
-@router.post("/{storyboard_id}/image")
-async def storyboard_image(storyboard_id: int, body: StoryboardImageRequest, db: Session = Depends(get_db)):
+@router.post("/batch-delete")
+def batch_delete_storyboards(body: BatchDeleteRequest, db: Session = Depends(get_db)) -> dict:
+    if not body.ids:
+        raise HTTPException(400, "ids 不能为空")
+    rows = db.scalars(
+        select(Storyboard)
+        .where(Storyboard.id.in_(body.ids), Storyboard.deleted_at.is_(None))
+    ).all()
+    now = datetime.utcnow()
+    count = 0
+    for sb in rows:
+        sb.deleted_at = now
+        count += 1
+    db.commit()
+    return {"deleted": count}
+
+
+@router.post("/batch-generate-images")
+async def batch_generate_storyboard_images(body: BatchGenerateImageRequest, db: Session = Depends(get_db)):
     ensure_active_user(db, body.username)
-    try:
-        outcome = await generate_storyboard_image(
-            db,
-            storyboard_id=storyboard_id,
-            full_prompt=body.prompt,
-            art_style_id=body.art_style_id,
-            username=body.username,
-        )
-        return _outcome_view(outcome)
-    except ComplianceBlocked as exc:
-        return JSONResponse(
-            status_code=451,
-            content={
-                "blocked": True,
-                "level": "red",
+    if not body.ids:
+        raise HTTPException(400, "ids 不能为空")
+    results: list[dict] = []
+    for sb_id in body.ids:
+        try:
+            outcome = await generate_storyboard_image(
+                db,
+                storyboard_id=sb_id,
+                full_prompt=None,
+                art_style_id=body.art_style_id,
+                username=body.username,
+                node_id=body.node_id,
+                resolution=body.resolution,
+            )
+            results.append({"storyboard_id": sb_id, "status": "completed", "image_url": outcome.result.image_url})
+        except ComplianceBlocked as exc:
+            results.append({
+                "storyboard_id": sb_id,
+                "status": "blocked",
                 "hits": [hit.__dict__ for hit in exc.result.hits],
-                "violation_count": exc.enforcement["violation_count"],
-                "banned": exc.enforcement["banned"],
-                "message": "画面提示词触发红线，已拦截并记录",
-            },
-        )
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except AssetGenerationError as exc:
-        raise HTTPException(502, str(exc)) from exc
+            })
+        except (LookupError, AssetGenerationError) as exc:
+            results.append({"storyboard_id": sb_id, "status": "failed", "error": str(exc)})
+    return {"results": results}
+
+
+@router.post("/batch-generate-prompts")
+def batch_generate_storyboard_prompts(body: BatchGeneratePromptRequest, db: Session = Depends(get_db)) -> dict:
+    """用 AI 为已选分镜润色/重新生成画面提示词。"""
+    ensure_active_user(db, body.username)
+    if not body.ids:
+        raise HTTPException(400, "ids 不能为空")
+    rows = db.scalars(
+        select(Storyboard)
+        .where(Storyboard.id.in_(body.ids), Storyboard.deleted_at.is_(None))
+        .order_by(Storyboard.storyboard_number)
+    ).all()
+    if not rows:
+        raise HTTPException(404, "没有找到有效的分镜")
+
+    # 聚合分镜信息发给 LLM 一次生成所有提示词
+    shots = []
+    for sb in rows:
+        shots.append({
+            "number": sb.storyboard_number,
+            "title": sb.title or "",
+            "location": sb.location or "",
+            "time": sb.time or "",
+            "shot_type": sb.shot_type or "",
+            "angle": sb.angle or "",
+            "movement": sb.movement or "",
+            "action": sb.action or "",
+            "dialogue": sb.dialogue or "",
+            "atmosphere": sb.atmosphere or "",
+        })
+
+    from app.services.agents.storyboard_agent import polish_prompts
+    try:
+        updated = polish_prompts(db, shots, body.temperature)
+    except LLMNotConfigured as e:
+        raise HTTPException(400, str(e))
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"LLM 调用失败: {e}")
+
+    # 回写
+    by_number = {sb.storyboard_number: sb for sb in rows}
+    count = 0
+    for item in updated:
+        num = item["number"]
+        if num in by_number:
+            by_number[num].image_prompt = item["prompt"]
+            count += 1
+    db.commit()
+    return {"updated": count, "prompts": updated}

@@ -30,3 +30,7 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    from app.services.voice_assignment import seed_preset_voices
+
+    with SessionLocal() as db:
+        seed_preset_voices(db)

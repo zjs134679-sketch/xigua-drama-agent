@@ -8,28 +8,28 @@ from sqlalchemy.orm import Session
 
 from app.models.domain import Storyboard
 from app.services.agents.script_agent import load_skill
-from app.services.llm.client import chat, resolve_llm
+from app.services.llm.client import chat_text, resolve_llm
 
 _OUTPUT_SPEC = (
-    "\n\n请把用户给出的剧本拆解为分镜清单，**只输出 JSON**，格式："
+    "\n\nBreak the user's script into a shot list. **Output JSON only**, format:"
     '{"storyboards":[{'
     '"storyboard_number":1,'
-    '"title":"3-5字标题",'
-    '"location":"地点",'
-    '"time":"时间+光线",'
-    '"shot_type":"景别(远景/全景/中景/近景/特写)",'
-    '"angle":"角度",'
-    '"movement":"运镜",'
-    '"action":"谁+怎么做+表情",'
-    '"dialogue":"该镜头对白",'
-    '"result":"画面结果",'
-    '"atmosphere":"光线/色调/氛围",'
-    '"image_prompt":"用于出图的英文静态画面提示词(纯画面,不含真实人名)",'
-    '"video_prompt":"按3秒分段的视频提示词",'
-    '"bgm_prompt":"配乐风格",'
-    '"sound_effect":"关键音效",'
+    '"title":"3-5 character Chinese title",'
+    '"location":"location in Chinese",'
+    '"time":"time + lighting in Chinese",'
+    '"shot_type":"shot size (extreme long shot/long shot/medium shot/close-up/extreme close-up)",'
+    '"angle":"camera angle",'
+    '"movement":"camera movement",'
+    '"action":"who does what + expression in Chinese",'
+    '"dialogue":"dialogue in Chinese",'
+    '"result":"visual result",'
+    '"atmosphere":"lighting/color tone/mood",'
+    '"image_prompt":"English static image prompt for AI image generation (pure visual description, no real person names)",'
+    '"video_prompt":"video prompt segmented by 3-second intervals",'
+    '"bgm_prompt":"background music style",'
+    '"sound_effect":"key sound effects",'
     '"duration":12'
-    "}]}。duration 取 10-15 的整数。不要任何解释或前后缀。"
+    "}]}. duration should be an integer between 10-15. No explanation or prefix/suffix."
 )
 
 
@@ -40,7 +40,7 @@ def break_storyboards(db: Session, script_content: str, temperature: float = 0.4
         {"role": "system", "content": skill + _OUTPUT_SPEC},
         {"role": "user", "content": script_content},
     ]
-    raw = chat(
+    raw = chat_text(
         messages,
         base_url,
         api_key,
@@ -99,3 +99,33 @@ def save_storyboards(db: Session, episode_id: int, shots: list[dict]) -> int:
         count += 1
     db.commit()
     return count
+
+
+def polish_prompts(db: Session, shots: list[dict], temperature: float = 0.4) -> list[dict]:
+    """Use LLM to generate polished English image prompts for existing shot list."""
+    base_url, api_key, model = resolve_llm(db)
+    skill = load_skill("storyboard_breaker")
+    prompt = (
+        "Below is shot data (JSON array). Generate a high-quality English image prompt (image_prompt) for each shot. "
+        "The prompt should include shot size, angle, camera movement, character action, expression, lighting and atmosphere, "
+        "suitable for direct use in AI image generation."
+        "\n\n**Output JSON only**, format: {\"prompts\":[{\"number\":shot_number,\"prompt\":\"image prompt\"}]}. No explanation."
+        f"\n\nShot data:\n{json.dumps(shots, ensure_ascii=False)}"
+    )
+    messages = [
+        {"role": "system", "content": skill},
+        {"role": "user", "content": prompt},
+    ]
+    raw = chat_text(
+        messages,
+        base_url,
+        api_key,
+        model,
+        temperature=temperature,
+        response_format={"type": "json_object"},
+    )
+    data = json.loads(raw)
+    prompts = data.get("prompts") or []
+    if not isinstance(prompts, list):
+        raise ValueError("Polished prompts result is not a list")
+    return prompts

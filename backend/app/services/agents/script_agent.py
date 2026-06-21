@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.services.llm.client import chat, resolve_llm
+from app.services.llm.client import chat_text, resolve_llm
 
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
@@ -30,4 +30,4 @@ def generate_script(db: Session, novel_content: str, temperature: float = 0.7) -
         },
         {"role": "user", "content": novel_content},
     ]
-    return chat(messages, base_url, api_key, model, temperature=temperature)
+    return chat_text(messages, base_url, api_key, model, temperature=temperature)

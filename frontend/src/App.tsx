@@ -16,6 +16,7 @@ import {
   Mountain,
   Play,
   Palette,
+  Package,
   Scissors,
   Server,
   Settings,
@@ -47,6 +48,7 @@ import AuthView from "./features/AuthView";
 import CharacterAssetsView from "./features/CharacterAssetsView";
 import ComputeNodesView from "./features/ComputeNodesView";
 import ProjectView from "./features/ProjectView";
+import PropAssetsView from "./features/PropAssetsView";
 import SceneAssetsView from "./features/SceneAssetsView";
 import SettingsView from "./features/SettingsView";
 import SponsorDialog from "./features/SponsorDialog";
@@ -54,7 +56,7 @@ import StoryboardView from "./features/StoryboardView";
 import TimelineView from "./features/TimelineView";
 import type { EpisodeSummary, Project } from "./api/client";
 
-type ViewId = "project" | "storyboard" | "script" | "characters" | "scenes" | "art-styles" | "timeline" | "compute" | "settings";
+type ViewId = "project" | "storyboard" | "script" | "characters" | "scenes" | "props" | "art-styles" | "timeline" | "compute" | "settings";
 type CurrentSelection = { drama: Project; episode: EpisodeSummary } | null;
 
 function WatermelonLogo({ size = 22 }: { size?: number }) {
@@ -66,6 +68,7 @@ const RAIL: { icon: typeof Folder; label: string; view?: ViewId }[] = [
   { icon: FileText, label: "剧本", view: "script" },
   { icon: Users, label: "角色资产", view: "characters" },
   { icon: Mountain, label: "场景造景", view: "scenes" },
+  { icon: Package, label: "道具", view: "props" },
   { icon: Palette, label: "画风库", view: "art-styles" },
   { icon: LayoutGrid, label: "分镜", view: "storyboard" },
   { icon: Film, label: "成片", view: "timeline" },
@@ -259,7 +262,7 @@ export default function App() {
               setView("script");
             }}
           />
-        ) : view === "script" ? <ScriptView username={user.username} current={current} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} username={user.username} /> : view === "scenes" ? <SceneAssetsView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} username={user.username} /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} /> : view === "compute" ? <ComputeNodesView /> : view === "settings" ? <SettingsView /> : (
+        ) : view === "script" ? <ScriptView username={user.username} current={current} onBanned={() => setBanned(true)} /> : view === "characters" ? <CharacterAssetsView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} username={user.username} /> : view === "scenes" ? <SceneAssetsView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} username={user.username} /> : view === "props" ? <PropAssetsView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} username={user.username} /> : view === "art-styles" ? <ArtStylesView /> : view === "timeline" ? <TimelineView currentDramaId={current?.drama.id ?? null} currentEpisodeId={current?.episode.id ?? null} /> : view === "compute" ? <ComputeNodesView /> : view === "settings" ? <SettingsView /> : (
           <StoryboardView current={current} username={user.username} onBanned={() => setBanned(true)} />
         )}
       </div>

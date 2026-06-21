@@ -59,6 +59,7 @@ class Character(Base, TimestampMixin):
     personality: Mapped[str | None] = mapped_column(Text)
     voice_style: Mapped[str | None] = mapped_column(Text)
     image_prompt: Mapped[str | None] = mapped_column(Text)  # 可编辑的出图提示词
+    view_type: Mapped[str] = mapped_column(Text, default="full_body")  # 出图视角：full_body/headshot/side
     image_url: Mapped[str | None] = mapped_column(Text)
     reference_images: Mapped[str | None] = mapped_column(Text)
     seed_value: Mapped[str | None] = mapped_column(Text)

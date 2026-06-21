@@ -388,6 +388,43 @@ export interface CharacterAsset {
   appearance: string | null;
   image_url: string | null;
   image_prompt: string | null;
+  personality?: string | null;
+  description?: string | null;
+  voice_id?: string | null;
+  voice_provider?: string | null;
+  view_type?: string;
+}
+
+export interface VoiceRecord {
+  id: number;
+  voice_id: string;
+  voice_name: string;
+  description: string | null;
+  language: string | null;
+  provider: string;
+}
+
+export function listVoices(): Promise<VoiceRecord[]> {
+  return jsonRequest("/voices");
+}
+
+export function updateCharacterVoice(
+  characterId: number,
+  voiceId: string,
+  voiceProvider: string,
+): Promise<{ id: number; voice_id: string; voice_provider: string }> {
+  return jsonRequest(`/projects/characters/${characterId}/voice`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id: voiceId, voice_provider: voiceProvider }),
+  });
+}
+
+export function assignVoices(projectId: number): Promise<{
+  drama_id: number;
+  assignments: { character_id: number; voice_id: string; voice_name: string; voice_provider: string }[];
+}> {
+  return jsonRequest(`/projects/${projectId}/assign-voices`, { method: "POST" });
 }
 
 export interface AssetGenerationResult {
@@ -399,6 +436,42 @@ export interface AssetGenerationResult {
   warn_hits?: ComplianceHit[];
   blocked?: boolean;
   message?: string;
+}
+
+export type AssetResolution =
+  | "portrait_768x1024"
+  | "square_1024x1024"
+  | "landscape_1024x576"
+  | "hd_portrait_896x1152";
+
+export const ASSET_RESOLUTIONS: { value: AssetResolution; label: string }[] = [
+  { value: "portrait_768x1024", label: "竖屏 768×1024" },
+  { value: "square_1024x1024", label: "方形 1024×1024" },
+  { value: "landscape_1024x576", label: "横屏 1024×576" },
+  { value: "hd_portrait_896x1152", label: "高清竖屏 896×1152" },
+];
+
+export type AssetTargetType = "character" | "scene" | "prop" | "storyboard";
+
+export interface AssetHistoryItem {
+  id: number;
+  image_url: string | null;
+  local_path: string | null;
+  prompt: string | null;
+  created_at: string | null;
+}
+
+export function listAssetHistory(targetType: AssetTargetType, targetId: number): Promise<AssetHistoryItem[]> {
+  return jsonRequest(`/assets/history?target_type=${encodeURIComponent(targetType)}&target_id=${targetId}`);
+}
+
+export function useAssetHistory(imageGenerationId: number): Promise<{
+  target_type: AssetTargetType;
+  target_id: number;
+  image_url: string | null;
+  local_path: string | null;
+}> {
+  return jsonRequest(`/assets/history/${imageGenerationId}/use`, { method: "POST" });
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
@@ -530,6 +603,10 @@ export function generateCharacterAsset(body: {
   prompt?: string;
   art_style_id?: number;
   username?: string;
+  node_id?: number;
+  resolution?: AssetResolution;
+  extra?: string;
+  view_type?: string;
 }): Promise<AssetGenerationResult> {
   return jsonRequest("/assets/character/generate", {
     method: "POST",
@@ -572,11 +649,51 @@ export function generateSceneAsset(body: {
   prompt?: string;
   art_style_id?: number;
   username?: string;
+  node_id?: number;
+  resolution?: AssetResolution;
+  extra?: string;
 }): Promise<AssetGenerationResult> {
   return jsonRequest("/assets/scene/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+export interface PropAsset {
+  id: number;
+  name: string;
+  type: string | null;
+  description: string | null;
+  prompt: string | null;
+  image_url: string | null;
+}
+
+export function listProps(projectId: number): Promise<PropAsset[]> {
+  return jsonRequest(`/projects/${projectId}/props`);
+}
+
+export function generatePropAsset(body: {
+  prop_id: number;
+  prompt?: string;
+  art_style_id?: number;
+  username?: string;
+  node_id?: number;
+  resolution?: AssetResolution;
+  extra?: string;
+}): Promise<AssetGenerationResult> {
+  return jsonRequest("/assets/prop/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updatePropPrompt(propId: number, prompt: string): Promise<{ id: number; prompt: string }> {
+  return jsonRequest(`/projects/props/${propId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
   });
 }
 
@@ -735,16 +852,149 @@ export function updateStoryboardPrompt(storyboardId: number, imagePrompt: string
   });
 }
 
+export interface BatchStoryboardImageResult {
+  storyboard_id: number;
+  status: "completed" | "blocked" | "failed";
+  image_url?: string;
+  error?: string;
+  hits?: ComplianceHit[];
+}
+
+export function batchDeleteStoryboards(ids: number[]): Promise<{ deleted: number }> {
+  return jsonRequest("/storyboard/batch-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export function batchGenerateStoryboardImages(body: {
+  ids: number[];
+  art_style_id?: number;
+  username?: string;
+  node_id?: number;
+  resolution?: string;
+}): Promise<{ results: BatchStoryboardImageResult[] }> {
+  return jsonRequest("/storyboard/batch-generate-images", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function batchGenerateStoryboardPrompts(body: {
+  ids: number[];
+  temperature?: number;
+  username?: string;
+}): Promise<{ updated: number; prompts: { number: number; prompt: string }[] }> {
+  return jsonRequest("/storyboard/batch-generate-prompts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ===== 视频生成 =====
+export interface VideoGenResult {
+  video_id: number;
+  storyboard_id: number;
+  status: string;
+  video_url: string | null;
+  prompt: string | null;
+  error_msg?: string | null;
+  duration?: number | null;
+}
+
+export interface VideoGenInput {
+  storyboard_id: number;
+  prompt?: string | null;
+  model?: string;
+  reference_mode?: string;
+  node_id?: number;
+  username?: string;
+  duration?: number;
+  resolution?: string;
+  extra?: string;
+}
+
+export interface BatchVideoGenInput {
+  storyboard_ids: number[];
+  model?: string;
+  reference_mode?: string;
+  node_id?: number;
+  username?: string;
+  duration?: number;
+  resolution?: string;
+}
+
+export interface VideoPromptInput {
+  storyboard_id: number;
+  model?: string;
+  mode?: string;
+}
+
+export function generateVideoPrompt(body: VideoPromptInput): Promise<{ storyboard_id: number; model: string; mode: string; prompt: string }> {
+  return jsonRequest("/video/generate-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function generateVideo(body: VideoGenInput): Promise<VideoGenResult> {
+  return jsonRequest("/video/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function batchGenerateVideo(body: BatchVideoGenInput): Promise<{ results: { storyboard_id: number; status: string; video_url?: string | null; video_id?: number; error?: string; hits?: ComplianceHit[] }[] }> {
+  return jsonRequest("/video/batch-generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function checkVideoStatus(videoId: number): Promise<VideoGenResult> {
+  return jsonRequest(`/video/poll/${videoId}`);
+}
+
+export function batchCheckVideoStatus(ids: number[]): Promise<{ results: VideoGenResult[] }> {
+  return jsonRequest("/video/poll-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export function listStoryboardVideos(storyboardId: number): Promise<VideoGenResult[]> {
+  return jsonRequest(`/video/list/${storyboardId}`);
+}
+
+export function deleteVideo(videoId: number): Promise<{ deleted: boolean; video_id?: number }> {
+  return jsonRequest(`/video/${videoId}`, { method: "DELETE" });
+}
+
 export async function generateStoryboardImage(
   storyboardId: number,
   username = "local",
   artStyleId?: number,
   prompt?: string,
+  options?: { node_id?: number; resolution?: AssetResolution; extra?: string },
 ): Promise<StoryboardImageResult> {
   const r = await apiFetch(`/storyboard/${storyboardId}/image`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, art_style_id: artStyleId ?? null, prompt: prompt ?? null }),
+    body: JSON.stringify({
+      username,
+      art_style_id: artStyleId ?? null,
+      prompt: prompt ?? null,
+      node_id: options?.node_id ?? null,
+      resolution: options?.resolution ?? null,
+      extra: options?.extra ?? null,
+    }),
   });
   const data = await r.json();
   if (r.ok) return { status: r.status, image_url: data.image_url, warn: data.warn, hits: data.warn_hits };
@@ -793,6 +1043,153 @@ export function saveLLMConfig(body: LLMConfigInput): Promise<LLMConfig> {
 
 export function testLLMConfig(body: Partial<LLMConfigInput>): Promise<LLMTestResult> {
   return jsonRequest("/settings/llm/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ===== Agent 流式对话 =====
+export interface AgentChunk {
+  type: "phase" | "text" | "tool_call" | "tool_result" | "done" | "error";
+  phase?: string;
+  content?: string;
+  message?: string;
+  function?: { name: string; arguments: string };
+  name?: string;
+  result?: string;
+  messages?: Record<string, unknown>[];
+}
+
+export type AgentStreamCallback = (chunk: AgentChunk) => void;
+
+export function agentChatStream(
+  body: { skill_name?: string; system_prompt?: string; message: string; temperature?: number; context?: Record<string, unknown>[] },
+  onChunk: AgentStreamCallback,
+  signal?: AbortSignal,
+): Promise<void> {
+  return agentSSE("/agent/chat/stream", body, onChunk, signal);
+}
+
+export function agentQuick(body: {
+  skill_name: string;
+  message: string;
+  temperature?: number;
+  instruction?: string;
+}): Promise<{ content: string }> {
+  return jsonRequest("/agent/quick", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function agentSSE(
+  path: string,
+  body: Record<string, unknown>,
+  onChunk: AgentStreamCallback,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = readToken();
+  const response = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `HTTP ${response.status}`);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("不支持流式响应");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          const chunk = JSON.parse(line.slice(6)) as AgentChunk;
+          onChunk(chunk);
+        } catch { /* skip malformed */ }
+      }
+    }
+  }
+}
+
+// ===== 技能库 =====
+export interface SkillMeta {
+  name: string;
+  display_name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  path: string;
+}
+
+export interface SkillDetail extends SkillMeta {
+  content: string;
+}
+
+export function listStoryTypes(): Promise<SkillMeta[]> {
+  return jsonRequest("/skills/story-types");
+}
+
+export function listAgentSkills(): Promise<SkillMeta[]> {
+  return jsonRequest("/skills/agents");
+}
+
+export function listAllSkills(category?: string): Promise<SkillMeta[]> {
+  const qs = category ? `?category=${encodeURIComponent(category)}` : "";
+  return jsonRequest(`/skills${qs}`);
+}
+
+export function getSkillDetail(category: string, name: string): Promise<SkillDetail> {
+  return jsonRequest(`/skills/${encodeURIComponent(category)}/${encodeURIComponent(name)}`);
+}
+
+export function searchSkills(query: string): Promise<(SkillMeta & { _score: number })[]> {
+  return jsonRequest(`/skills/search?q=${encodeURIComponent(query)}`);
+}
+
+// ===== 提示词润色 =====
+export interface PolishResult {
+  original: string;
+  polished: string;
+  asset_type: string;
+}
+
+export interface BatchPolishResult {
+  results: { id: number | string; polished: string }[];
+}
+
+export function polishPrompt(body: {
+  asset_type?: string;
+  prompt: string;
+  context?: string;
+  temperature?: number;
+}): Promise<PolishResult> {
+  return jsonRequest("/assets/polish-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function batchPolishPrompts(body: {
+  asset_type?: string;
+  items: { id: number | string; prompt: string; context?: string }[];
+  temperature?: number;
+}): Promise<BatchPolishResult> {
+  return jsonRequest("/assets/polish-prompt/batch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

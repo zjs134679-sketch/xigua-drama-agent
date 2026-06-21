@@ -26,6 +26,10 @@ class CharacterGenerateRequest(BaseModel):
     username: str | None = None
     scene_id: int | None = None
     action: str | None = None
+    node_id: int | None = None
+    resolution: str | None = None
+    extra: str | None = None
+    view_type: str = "full_body"  # 出图视角：full_body/headshot/side
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -39,9 +43,28 @@ class SceneGenerateRequest(BaseModel):
     prompt: str | None = None
     art_style_id: int | None = None
     username: str | None = None
+    node_id: int | None = None
+    resolution: str | None = None
+    extra: str | None = None
 
     @model_validator(mode="after")
     def validate_target(self):
         if self.scene_id is None and not self.prompt:
             raise ValueError("scene_id 与 prompt 至少提供一项")
+        return self
+
+
+class PropGenerateRequest(BaseModel):
+    prop_id: int | None = None
+    prompt: str | None = None
+    art_style_id: int | None = None
+    username: str | None = None
+    node_id: int | None = None
+    resolution: str | None = None
+    extra: str | None = None
+
+    @model_validator(mode="after")
+    def validate_target(self):
+        if self.prop_id is None and not self.prompt:
+            raise ValueError("prop_id 与 prompt 至少提供一项")
         return self

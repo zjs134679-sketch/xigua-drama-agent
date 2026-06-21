@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.models.domain import AiServiceConfig
 from app.schemas.settings import LLMConfigIn, LLMConfigOut, LLMTestIn, LLMTestOut
-from app.services.llm.client import chat
+from app.services.llm.client import chat_text
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -108,7 +108,7 @@ def test_llm(body: LLMTestIn, db: Session = Depends(get_db)) -> LLMTestOut:
         return LLMTestOut(ok=False, message="未提供 base_url / api_key，且无已存配置")
     started = time.monotonic()
     try:
-        reply = chat(
+        reply = chat_text(
             [{"role": "user", "content": "回复两个字：在线"}],
             base_url=base_url,
             api_key=api_key,

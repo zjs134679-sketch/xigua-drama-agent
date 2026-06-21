@@ -32,6 +32,10 @@ auth-server/secret_dict/*.txt
 .env.*
 !.env.example
 
+# 运行时 / 本地（根级 data 与 .claude 不入仓）
+/data/
+/.claude/
+
 # OS
 .DS_Store
 Thumbs.db

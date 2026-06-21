@@ -8,16 +8,18 @@ from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
-from app.models.domain import Character, Drama, Episode, Prop, Scene
+from app.models.domain import AiVoice, Character, Drama, Episode, Prop, Scene
 from app.schemas.project import (
     AssetPromptUpdate,
     DramaCreate,
     EpisodeCreate,
     NovelImportRequest,
+    VoiceBindingRequest,
 )
 from app.services.asset_generation import build_character_prompt
 from app.services.compliance import check, enforce
 from app.services.novel_split import split_novel
+from app.services.voice_assignment import assign_character_voices
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -170,8 +172,10 @@ def list_characters(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
     return [
         {"id": c.id, "name": c.name, "role": c.role, "appearance": c.appearance,
          "personality": c.personality, "description": c.description, "image_url": c.image_url,
+         "voice_id": c.voice_style, "voice_provider": c.voice_provider,
+         "view_type": c.view_type or "full_body",
          # 可编辑出图提示词：已存优先，否则给一个可改的自动建议
-         "image_prompt": c.image_prompt or build_character_prompt(c, None, None)}
+         "image_prompt": c.image_prompt or build_character_prompt(c, None, None, view_type=c.view_type or "full_body")}
         for c in rows
     ]
 
@@ -184,6 +188,38 @@ def update_character_prompt(character_id: int, body: AssetPromptUpdate, db: Sess
     c.image_prompt = body.prompt
     db.commit()
     return {"id": c.id, "image_prompt": c.image_prompt}
+
+
+@router.patch("/characters/{character_id}/voice")
+def update_character_voice(character_id: int, body: VoiceBindingRequest, db: Session = Depends(get_db)) -> dict:
+    character = db.get(Character, character_id)
+    if character is None or character.deleted_at is not None:
+        raise HTTPException(404, "角色不存在")
+    voice = db.scalars(
+        select(AiVoice).where(AiVoice.voice_id == body.voice_id, AiVoice.provider == body.voice_provider)
+    ).first()
+    if voice is None:
+        raise HTTPException(404, "音色不存在")
+    character.voice_style = voice.voice_id
+    character.voice_provider = voice.provider
+    db.commit()
+    return {
+        "id": character.id,
+        "voice_id": character.voice_style,
+        "voice_provider": character.voice_provider,
+    }
+
+
+@router.post("/{drama_id}/assign-voices")
+def assign_voices(drama_id: int, db: Session = Depends(get_db)) -> dict:
+    drama = db.get(Drama, drama_id)
+    if drama is None or drama.deleted_at is not None:
+        raise HTTPException(404, "项目不存在")
+    try:
+        assignments = assign_character_voices(db, drama_id)
+    except LookupError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"drama_id": drama_id, "assignments": assignments}
 
 
 @router.get("/{drama_id}/scenes")
@@ -214,6 +250,17 @@ def list_props(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
         select(Prop).where(Prop.drama_id == drama_id, Prop.deleted_at.is_(None)).order_by(Prop.id)
     ).all()
     return [
-        {"id": p.id, "name": p.name, "type": p.type, "description": p.description, "prompt": p.prompt}
+        {"id": p.id, "name": p.name, "type": p.type, "description": p.description,
+         "prompt": p.prompt, "image_url": p.image_url}
         for p in rows
     ]
+
+
+@router.patch("/props/{prop_id}")
+def update_prop_prompt(prop_id: int, body: AssetPromptUpdate, db: Session = Depends(get_db)) -> dict:
+    prop = db.get(Prop, prop_id)
+    if prop is None or prop.deleted_at is not None:
+        raise HTTPException(404, "道具不存在")
+    prop.prompt = body.prompt
+    db.commit()
+    return {"id": prop.id, "prompt": prop.prompt}

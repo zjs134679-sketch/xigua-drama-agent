@@ -4,13 +4,23 @@ import {
   extractFromEpisode,
   generateSceneAsset,
   listArtStyles,
+  listComputeNodes,
   listProjects,
   listScenes,
+  polishPrompt,
   updateScenePrompt,
   type ArtStyle,
+  type AssetResolution,
+  type ComputeNodeRecord,
   type Project,
   type SceneAsset,
 } from "../api/client";
+import BatchBar from "../components/BatchBar";
+import AssetGenerationControls from "../components/AssetGenerationControls";
+import AssetHistoryStrip from "../components/AssetHistoryStrip";
+import AdditionalInstructionField from "../components/AdditionalInstructionField";
+import { useBatchRun, type BatchOutcome } from "../components/useBatchRun";
+import { useSelection } from "../components/useSelection";
 
 export default function SceneAssetsView({
   currentDramaId,
@@ -26,11 +36,18 @@ export default function SceneAssetsView({
   const [scenes, setScenes] = useState<SceneAsset[]>([]);
   const [styles, setStyles] = useState<ArtStyle[]>([]);
   const [styleId, setStyleId] = useState<number | undefined>();
+  const [nodes, setNodes] = useState<ComputeNodeRecord[]>([]);
+  const [resolutions, setResolutions] = useState<Record<number, AssetResolution>>({});
+  const [nodeIds, setNodeIds] = useState<Record<number, number | undefined>>({});
   const [generating, setGenerating] = useState<number | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [saving, setSaving] = useState<number | null>(null);
+  const [polishing, setPolishing] = useState<number | null>(null);
   const [prompts, setPrompts] = useState<Record<number, string>>({});
   const [notice, setNotice] = useState("");
+  const [extra, setExtra] = useState("");
+  const sel = useSelection();
+  const batch = useBatchRun();
 
   useEffect(() => {
     listProjects().then((rows) => {
@@ -41,6 +58,7 @@ export default function SceneAssetsView({
       }
     }).catch((e: Error) => setNotice(e.message));
     listArtStyles().then(setStyles).catch(() => undefined);
+    listComputeNodes().then(setNodes).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDramaId]);
 
@@ -59,6 +77,8 @@ export default function SceneAssetsView({
       .catch((e: Error) => setNotice(e.message));
   useEffect(() => {
     if (projectId != null) loadScenes(projectId);
+    sel.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   const savePrompt = async (scene: SceneAsset) => {
@@ -74,27 +94,64 @@ export default function SceneAssetsView({
     }
   };
 
-  const generate = async (scene: SceneAsset) => {
-    setGenerating(scene.id);
+  const polishPromptForScene = async (scene: SceneAsset) => {
+    setPolishing(scene.id);
     setNotice("");
+    try {
+      const result = await polishPrompt({
+        asset_type: "scene",
+        prompt: prompts[scene.id] ?? "",
+        context: [scene.location, scene.time].filter(Boolean).join("，"),
+      });
+      setPrompts((previous) => ({ ...previous, [scene.id]: result.polished }));
+      setNotice(`已润色「${scene.location ?? "场景"}」的提示词`);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "润色失败");
+    } finally {
+      setPolishing(null);
+    }
+  };
+
+  const generateCore = async (scene: SceneAsset): Promise<BatchOutcome> => {
+    setGenerating(scene.id);
     try {
       const result = await generateSceneAsset({
         scene_id: scene.id,
         prompt: prompts[scene.id] ?? undefined,
         art_style_id: styleId,
         username,
+        node_id: nodeIds[scene.id],
+        resolution: resolutions[scene.id] ?? "landscape_1024x576",
+        extra: extra.trim() || undefined,
       });
-      if (result.blocked) {
-        setNotice(`红线拦截：${result.message ?? "提示词触发红线"}`);
-      } else {
-        setNotice(result.warn ? "场景图已生成，提示词包含需关注内容。" : "场景图生成完成。");
-      }
-      if (projectId != null) await loadScenes(projectId);
+      return { ok: !result.blocked, message: result.blocked ? result.message ?? "提示词触发红线" : undefined };
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : "生成失败");
+      const msg = e instanceof Error ? e.message : "生成失败";
+      return { ok: false, message: msg, banned: msg.includes("封") };
     } finally {
       setGenerating(null);
     }
+  };
+
+  const generate = async (scene: SceneAsset) => {
+    setNotice("");
+    const outcome = await generateCore(scene);
+    setNotice(outcome.ok ? "场景图生成完成。" : outcome.message ?? "生成失败");
+    if (projectId != null) await loadScenes(projectId);
+  };
+
+  const runBatch = async () => {
+    const queue = scenes.filter((s) => sel.selected.has(s.id));
+    if (!queue.length) return;
+    setNotice("");
+    const byId = new Map(scenes.map((s) => [s.id, s]));
+    const res = await batch.run(queue.map((s) => s.id), (id) => generateCore(byId.get(id)!));
+    if (projectId != null) await loadScenes(projectId);
+    if (!res) return;
+    const ok = res.done - res.failed;
+    if (res.banned) setNotice("账号已被封禁，已停止批量生成。");
+    else if (res.stopped) setNotice(`已停止：成功 ${ok}/${res.total}，失败 ${res.failed}。`);
+    else setNotice(`批量完成：成功 ${ok}、失败 ${res.failed}，共 ${res.total}。${res.lastMessage ? `（最后一条：${res.lastMessage}）` : ""}`);
   };
 
   const extract = async () => {
@@ -119,6 +176,12 @@ export default function SceneAssetsView({
     }
   };
 
+  const allIds = scenes.map((s) => s.id);
+  const ungeneratedIds = scenes.filter((s) => !s.image_url).map((s) => s.id);
+  const progressText = batch.progress
+    ? `生成中 ${batch.progress.done}/${batch.progress.total}${batch.progress.failed ? `（失败 ${batch.progress.failed}）` : ""}`
+    : null;
+
   return (
     <div className="feature-view">
       <div className="feature-header">
@@ -137,14 +200,46 @@ export default function SceneAssetsView({
           </select>
         </div>
       </div>
+      <AdditionalInstructionField value={extra} onChange={setExtra} disabled={batch.running} />
+      <BatchBar
+        total={scenes.length}
+        ungeneratedCount={ungeneratedIds.length}
+        selectedCount={sel.selected.size}
+        onSelectAll={() => sel.replace(allIds)}
+        onSelectUngenerated={() => sel.replace(ungeneratedIds)}
+        onInvert={() => sel.invert(allIds)}
+        onClear={() => sel.clear()}
+        onRun={runBatch}
+        onStop={batch.stop}
+        running={batch.running}
+        progressText={progressText}
+        runLabel="批量生成场景图"
+      />
       {notice && <div className="feature-notice"><AlertTriangle size={14} /> {notice}</div>}
       <div className="feature-body">
         <div className="asset-grid character-grid">
-          {scenes.map((scene) => (
-            <article className="asset-card" key={scene.id}>
-              <div className="asset-preview">
+          {scenes.map((scene) => {
+            const picked = sel.selected.has(scene.id);
+            return (
+            <article className="asset-card" key={scene.id} style={picked ? { outline: "2px solid var(--green)", outlineOffset: -1 } : undefined}>
+              <div className="asset-preview" style={{ position: "relative" }}>
+                <label
+                  style={{ position: "absolute", left: 6, top: 6, zIndex: 2, display: "flex", cursor: "pointer", background: "var(--bg)", borderRadius: 4, padding: 3, lineHeight: 0 }}
+                  title="选择此场景（用于批量生成）"
+                >
+                  <input type="checkbox" checked={picked} onChange={() => sel.toggle(scene.id)} disabled={batch.running} />
+                </label>
                 {scene.image_url ? <img src={scene.image_url} alt={scene.location ?? ""} /> : <Image size={30} />}
+                {generating === scene.id && (
+                  <span style={{ position: "absolute", right: 6, top: 6, zIndex: 2, color: "var(--green-t)" }}><LoaderCircle className="spin" size={16} /></span>
+                )}
               </div>
+              <AssetHistoryStrip
+                targetType="scene"
+                targetId={scene.id}
+                currentImageUrl={scene.image_url}
+                onUse={(imageUrl) => setScenes((previous) => previous.map((item) => item.id === scene.id ? { ...item, image_url: imageUrl } : item))}
+              />
               <div className="asset-content">
                 <strong>{scene.location || "未命名场景"}</strong>
                 <span>{scene.time || "未设置时间"}</span>
@@ -156,18 +251,39 @@ export default function SceneAssetsView({
                   style={{ resize: "vertical", fontSize: 12, lineHeight: 1.5 }}
                   placeholder="描述这个场景的纯背景画面提示词…"
                 />
+                <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: "4px 10px", fontSize: 12 }}
+                    disabled={polishing === scene.id || batch.running}
+                    onClick={() => polishPromptForScene(scene)}
+                    title="AI 润色提示词"
+                  >
+                    {polishing === scene.id ? <LoaderCircle className="spin" size={13} /> : <Wand2 size={13} />}
+                    AI 润色
+                  </button>
+                </div>
+                <AssetGenerationControls
+                  resolution={resolutions[scene.id] ?? "landscape_1024x576"}
+                  nodeId={nodeIds[scene.id]}
+                  nodes={nodes}
+                  disabled={batch.running}
+                  onResolutionChange={(value) => setResolutions((previous) => ({ ...previous, [scene.id]: value }))}
+                  onNodeChange={(value) => setNodeIds((previous) => ({ ...previous, [scene.id]: value }))}
+                />
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button className="btn-secondary" style={{ flex: "none", padding: "5px 10px" }} disabled={saving != null} onClick={() => savePrompt(scene)} title="只保存提示词，不出图">
+                  <button className="btn-secondary" style={{ flex: "none", padding: "5px 10px" }} disabled={saving != null || batch.running} onClick={() => savePrompt(scene)} title="只保存提示词，不出图">
                     {saving === scene.id ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} 保存
                   </button>
-                  <button className="btn-secondary" style={{ flex: 1 }} disabled={generating != null} onClick={() => generate(scene)}>
+                  <button className="btn-secondary" style={{ flex: 1 }} disabled={generating != null || batch.running} onClick={() => generate(scene)}>
                     {generating === scene.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
                     {scene.image_url ? "重新生成" : "生成场景图"}
                   </button>
                 </div>
               </div>
             </article>
-          ))}
+            );
+          })}
           {!scenes.length && <div className="empty-state"><Mountain size={24} /> 当前项目暂无场景。点右上「AI 提取角色/场景」，从分集剧本自动提取。</div>}
         </div>
       </div>

@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.agent import router as agent_router
 from app.api.compliance import router as compliance_router
 from app.api.assets import assets_router, styles_router
 from app.api.compute import router as compute_router
@@ -15,8 +16,12 @@ from app.api.extract import router as extract_router
 from app.api.projects import router as projects_router
 from app.api.script import router as script_router
 from app.api.settings import router as settings_router
+from app.api.skills import router as skills_router
 from app.api.storyboard import router as storyboard_router
 from app.api.timeline import router as timeline_router
+from app.api.vendors import router as vendors_router
+from app.api.video import router as video_router
+from app.api.voices import router as voices_router
 from app.core.config import settings
 from app.core.db import init_db
 from app.core.logging import logger, setup_logging
@@ -44,6 +49,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(agent_router)
 app.include_router(health_router)
 app.include_router(compliance_router)
 app.include_router(compute_router)
@@ -51,10 +57,14 @@ app.include_router(projects_router)
 app.include_router(script_router)
 app.include_router(settings_router)
 app.include_router(storyboard_router)
+app.include_router(skills_router)
 app.include_router(extract_router)
 app.include_router(styles_router)
 app.include_router(assets_router)
 app.include_router(timeline_router)
+app.include_router(vendors_router)
+app.include_router(video_router)
+app.include_router(voices_router)
 
 oss_dir = settings.data_dir / "oss"
 oss_dir.mkdir(parents=True, exist_ok=True)

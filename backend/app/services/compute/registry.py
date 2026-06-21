@@ -32,3 +32,12 @@ def get_active_node(db: Session | None = None) -> ComputeNode:
         if row is not None:
             return build_node(row)
     return LocalComfyNode(settings.comfyui_base_url)
+
+
+def get_node(db: Session, node_id: int | None) -> ComputeNode:
+    """Return an explicitly selected active node, or use the normal active-node fallback."""
+    if node_id is not None:
+        row = db.get(ComputeNodeRow, node_id)
+        if row is not None and row.is_active:
+            return build_node(row)
+    return get_active_node(db)

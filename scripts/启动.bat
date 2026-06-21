@@ -26,17 +26,21 @@ if not exist "%ROOT%\frontend\node_modules" (
 echo [前端] 启动中...
 start "xigua-frontend" /d "%ROOT%\frontend" cmd /c "npm run dev"
 
-:: ===== auth-server (port 8100) — 默认注释，需要时取消注释 =====
-:: if not exist "%ROOT%\auth-server\.venv\Scripts\python.exe" (
-::     python -m venv "%ROOT%\auth-server\.venv"
-::     "%ROOT%\auth-server\.venv\Scripts\pip.exe" install -q -r "%ROOT%\auth-server\requirements.txt"
-:: )
-:: start "xigua-auth" /d "%ROOT%\auth-server" "%ROOT%\auth-server\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+:: ===== auth-server (port 8100) — 认证/封号/合规词库下发 =====
+if not exist "%ROOT%\auth-server\.venv\Scripts\python.exe" (
+    echo [认证] 创建虚拟环境...
+    python -m venv "%ROOT%\auth-server\.venv"
+    echo [认证] 安装依赖...
+    "%ROOT%\auth-server\.venv\Scripts\pip.exe" install -q -r "%ROOT%\auth-server\requirements.txt"
+)
+echo [认证] 启动中...
+start "xigua-auth" /d "%ROOT%\auth-server" "%ROOT%\auth-server\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8100
 
 echo.
 echo ==============================
 echo  后端 API Docs : http://127.0.0.1:5678/docs
 echo  前端界面      : http://localhost:5173
+echo  认证服务      : http://127.0.0.1:8100
 echo ==============================
 echo.
 pause

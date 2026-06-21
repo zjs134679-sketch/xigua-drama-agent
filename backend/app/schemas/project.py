@@ -26,6 +26,11 @@ class AssetPromptUpdate(BaseModel):
     prompt: str                   # 角色/场景的可编辑出图提示词
 
 
+class VoiceBindingRequest(BaseModel):
+    voice_id: str
+    voice_provider: str
+
+
 class ScriptGenerateRequest(BaseModel):
     episode_id: int
     temperature: float = 0.7

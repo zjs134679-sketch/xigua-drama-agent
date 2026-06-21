@@ -8,17 +8,17 @@ from sqlalchemy.orm import Session
 
 from app.models.domain import Character, EpisodeCharacter, EpisodeScene, Prop, Scene
 from app.services.agents.script_agent import load_skill
-from app.services.llm.client import chat, resolve_llm
+from app.services.llm.client import chat_text, resolve_llm
 
 _INSTRUCTION = """
-请阅读下面的剧本/小说内容，提取其中真实出现的【角色】【场景】【道具】。
-严格只输出一个 JSON 对象（不要任何解释、不要 markdown 代码块），结构如下：
+Read the script/novel content below and extract actual [characters] [scenes] [props] that appear in the text.
+Output strictly a single JSON object (no explanation, no markdown code blocks), with the following structure:
 {
-  "characters": [{"name":"","role":"主角/配角/龙套","appearance":"外貌描写","personality":"性格标签","description":"背景与关系"}],
-  "scenes": [{"location":"地点","time":"时间段","atmosphere":"氛围","prompt":"英文背景提示词(纯背景不含人物)"}],
-  "props": [{"name":"","type":"类型","description":"描述","prompt":"英文图片提示词"}]
+  "characters": [{"name":"character name in Chinese","role":"protagonist/supporting/extra","appearance":"appearance description in Chinese","personality":"personality tags in Chinese","description":"background and relationships in Chinese"}],
+  "scenes": [{"location":"location in Chinese","time":"time of day in Chinese","atmosphere":"atmosphere in Chinese","prompt":"English background image prompt (pure background, no people)"}],
+  "props": [{"name":"prop name in Chinese","type":"type","description":"description in Chinese","prompt":"English image prompt"}]
 }
-只提取内容中真实涉及的；没有就给空数组。必须是合法 json。
+Only extract what actually appears in the content; use empty arrays if none found. Must be valid JSON.
 """
 
 
@@ -45,7 +45,7 @@ def extract(db: Session, content: str, temperature: float = 0.3) -> dict:
         {"role": "system", "content": skill + "\n\n" + _INSTRUCTION},
         {"role": "user", "content": content},
     ]
-    raw = chat(messages, base_url, api_key, model, temperature=temperature, response_format={"type": "json_object"})
+    raw = chat_text(messages, base_url, api_key, model, temperature=temperature, response_format={"type": "json_object"})
     data = _parse_json(raw)
     return {
         "characters": data.get("characters") or [],
