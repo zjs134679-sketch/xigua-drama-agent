@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   exportTimeline,
+  generateVideo,
   getTimeline,
   listEpisodes,
   listProjects,
@@ -76,9 +77,11 @@ function synchronise(document: TimelineDocument, videoClips: TimelineClip[]): Ti
 export default function TimelineView({
   currentDramaId,
   currentEpisodeId,
+  username = "local",
 }: {
   currentDramaId?: number | null;
   currentEpisodeId?: number | null;
+  username?: string;
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<number | null>(null);
@@ -92,6 +95,8 @@ export default function TimelineView({
   const [notice, setNotice] = useState("");
   const [noticeKind, setNoticeKind] = useState<"normal" | "error">("normal");
   const [mergedUrl, setMergedUrl] = useState("");
+  const [generatingVideo, setGeneratingVideo] = useState<number | null>(null);
+  const [videoBatch, setVideoBatch] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     listProjects()
@@ -243,6 +248,74 @@ export default function TimelineView({
     }
   };
 
+  const reloadTimeline = async () => {
+    if (episodeId == null) return;
+    const doc = await getTimeline(episodeId);
+    setTimeline(doc);
+  };
+
+  // 单镜图 → 视频（LTX i2v）。LTX 片段宜短，时长 2~6s。
+  const generateOneVideo = (storyboardId: number, durationSec: number) =>
+    generateVideo({
+      storyboard_id: storyboardId,
+      username,
+      duration: Math.min(Math.max(Math.round(durationSec) || 5, 2), 6),
+      resolution: "1024x576",
+    });
+
+  const generateVideoForSelected = async () => {
+    if (selected?.storyboard_id == null || episodeId == null) return;
+    setGeneratingVideo(selected.storyboard_id);
+    setNotice("");
+    setNoticeKind("normal");
+    try {
+      const result = await generateOneVideo(selected.storyboard_id, selected.duration);
+      if (result.status === "completed" && result.video_url) {
+        await reloadTimeline();
+        setNotice("镜头视频已生成");
+      } else {
+        setNoticeKind("error");
+        setNotice(result.error_msg || "视频生成失败");
+      }
+    } catch (error) {
+      setNoticeKind("error");
+      setNotice(error instanceof Error ? error.message : "视频生成失败");
+    } finally {
+      setGeneratingVideo(null);
+    }
+  };
+
+  const generateAllVideos = async () => {
+    if (!timeline || episodeId == null) return;
+    const pending = timeline.tracks.video.clips.filter((clip) => clip.storyboard_id != null && !clip.video_url);
+    if (!pending.length) {
+      setNoticeKind("normal");
+      setNotice("所有镜头都已生成视频");
+      return;
+    }
+    setNotice("");
+    setNoticeKind("normal");
+    let done = 0;
+    let failed = 0;
+    for (const clip of pending) {
+      setVideoBatch({ done, total: pending.length });
+      setGeneratingVideo(clip.storyboard_id!);
+      try {
+        const result = await generateOneVideo(clip.storyboard_id!, clip.duration);
+        if (!(result.status === "completed" && result.video_url)) failed += 1;
+      } catch {
+        failed += 1;
+      }
+      done += 1;
+      setVideoBatch({ done, total: pending.length });
+    }
+    setGeneratingVideo(null);
+    setVideoBatch(null);
+    await reloadTimeline();
+    setNoticeKind(failed ? "error" : "normal");
+    setNotice(`批量生成完成：成功 ${done - failed}、失败 ${failed}，共 ${pending.length}`);
+  };
+
   return (
     <div className="feature-view timeline-view">
       <div className="feature-header">
@@ -301,12 +374,25 @@ export default function TimelineView({
             <button className="btn-secondary" disabled={!selected || selected.index === 0} onClick={() => reorder(-1)}><ChevronLeft size={14} /> 前移</button>
             <button className="btn-secondary" disabled={!selected || selected.index === (timeline?.tracks.video.clips.length ?? 0) - 1} onClick={() => reorder(1)}>后移 <ChevronRight size={14} /></button>
           </div>
+          <button
+            className="btn-primary"
+            style={{ marginTop: 10, width: "100%" }}
+            disabled={selected?.storyboard_id == null || generatingVideo != null}
+            onClick={() => void generateVideoForSelected()}
+            title="用该镜头的图，经 LTX 图生视频生成视频片段"
+          >
+            {generatingVideo === selected?.storyboard_id ? <LoaderCircle className="spin" size={14} /> : <Video size={14} />}
+            {generatingVideo === selected?.storyboard_id ? " 生成中（LTX 出片较慢）…" : selected?.video_url ? " 重新生成视频" : " 生成视频"}
+          </button>
         </aside>
 
         <section className="timeline-editor">
           <div className="timeline-toolbar">
             <span><Film size={14} /> 总时长 {formatTime(timeline?.duration ?? 0)}</span>
             <div />
+            <button className="toolbar-button" disabled={!timeline || generatingVideo != null || saving || exporting} onClick={() => void generateAllVideos()} title="把所有还没出视频的镜头逐个图生视频">
+              {videoBatch ? <LoaderCircle className="spin" size={14} /> : <Video size={14} />} {videoBatch ? `生成视频 ${videoBatch.done}/${videoBatch.total}` : "批量生成视频"}
+            </button>
             <button className="toolbar-button" disabled={!timeline || saving || exporting} onClick={() => void save()}>
               {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />} 保存
             </button>

@@ -188,6 +188,8 @@ async def submit_video_generation(
         width, height = 1024, 576
 
     node = get_node(db, node_id)
+    if not hasattr(node, "text2video"):
+        raise VideoGenError("当前算力节点不支持视频生成（目前仅本地 ComfyUI）")
     job = VideoJob(
         prompt=full_prompt,
         first_frame_url=sb.composed_image or sb.first_frame_image,
@@ -197,24 +199,20 @@ async def submit_video_generation(
         height=height,
         resolution=resolution,
     )
+    if not job.first_frame_url:
+        raise VideoGenError("该分镜还没有镜头图，请先在分镜台「出图」")
 
-    # 尝试本地 ComfyUI 节点
-    try:
-        image_job = ImageJob(
-            prompt=full_prompt,
-            width=width,
-            height=height,
-            reference_images=[ref for ref in [job.first_frame_url] if ref],
-            workflow="vid2vid.api.json",
-        )
-        result = await node.text2image(image_job)
-        status = result.status if result.status else "pending"
-        video_url = result.image_url
-        local_path = result.image_path
-    except Exception:
-        status = "pending"
-        video_url = None
-        local_path = None
+    # 单图 → 视频：LTX i2v 工作流（提示词合规已在上方校验）。同步等待出片。
+    result = await node.text2video(
+        input_image=job.first_frame_url,
+        prompt=full_prompt,
+        duration=duration,
+        workflow="ltx23-i2v.api.json",
+    )
+    status = result.status
+    video_url = result.image_url
+    local_path = result.image_path
+    error_msg = None if status == "completed" else (result.error or "视频生成失败")
 
     generation = VideoGeneration(
         storyboard_id=storyboard_id,
@@ -233,11 +231,12 @@ async def submit_video_generation(
         video_url=video_url or None,
         local_path=local_path or None,
         status=status,
+        error_msg=error_msg,
         width=width,
         height=height,
     )
     db.add(generation)
-    if video_url and (status == "completed"):
+    if video_url and status == "completed":
         sb.video_url = video_url
         generation.completed_at = datetime.utcnow()
     db.commit()
