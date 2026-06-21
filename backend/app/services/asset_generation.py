@@ -98,15 +98,13 @@ def build_character_prompt(
     scene_prompt = None
     if scene is not None:
         scene_prompt = _parts(scene.location, scene.prompt)
-    view_hint = VIEW_TYPE_PROMPTS.get(view_type, VIEW_TYPE_PROMPTS["full_body"])
+    # view_hint 与 CHARACTER_PORTRAIT_PROMPT 改到 generate_character_asset 统一追加（对所有提示词来源生效）
     return _parts(
         style.prompt_suffix if style else None,
         identity,
         custom_prompt,
         scene_prompt,
         action,
-        view_hint,
-        CHARACTER_PORTRAIT_PROMPT,
         PROTECTION_PROMPT,
     )
 
@@ -319,7 +317,9 @@ async def generate_character_asset(
     if character is not None:
         character.image_prompt = base_prompt  # 附加指令仅用于本次生成，不污染可编辑提示词
         character.view_type = view_type  # 记录本次出图视角
-    prompt = _parts(base_prompt, extra)
+    # 始终把「纯背景/单人/无文字」追加到正向（flux cfg=1 负向无效），对所有提示词来源都生效
+    view_hint = VIEW_TYPE_PROMPTS.get(view_type, VIEW_TYPE_PROMPTS["full_body"])
+    prompt = _parts(base_prompt, view_hint, CHARACTER_PORTRAIT_PROMPT, extra)
 
     return await _generate(
         db,
