@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
-import { AlertTriangle, BookUp, FileText, FolderPlus, Loader2, Plus, Clapperboard } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, BookUp, FileText, FolderPlus, Loader2, Plus, Clapperboard, Trash2 } from "lucide-react";
 import {
   createDrama,
   createEpisode,
+  deleteDrama,
   importNovel,
   listEpisodes,
   listProjects,
@@ -31,12 +32,15 @@ export default function ProjectView({
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ project: Project; x: number; y: number } | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   // 新建项目
   const [dTitle, setDTitle] = useState("");
   const [dGenre, setDGenre] = useState("");
   const [dStyle, setDStyle] = useState("realistic");
   const [creatingD, setCreatingD] = useState(false);
+  const dTitleRef = useRef<HTMLInputElement>(null);
 
   // 新建分集
   const [eTitle, setETitle] = useState("");
@@ -65,6 +69,22 @@ export default function ProjectView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [contextMenu]);
+
   const selectDrama = async (d: Project) => {
     setSelected(d);
     setEpisodes([]);
@@ -79,7 +99,11 @@ export default function ProjectView({
   };
 
   const addDrama = async () => {
-    if (!dTitle.trim()) return;
+    if (!dTitle.trim()) {
+      setErr("请先填写剧名再新建项目。");
+      dTitleRef.current?.focus();
+      return;
+    }
     setCreatingD(true);
     setErr(null);
     try {
@@ -108,6 +132,33 @@ export default function ProjectView({
       setErr(e instanceof Error ? e.message : "新建分集失败");
     } finally {
       setCreatingE(false);
+    }
+  };
+
+  const removeDrama = async (project: Project) => {
+    setContextMenu(null);
+    const confirmed = window.confirm(
+      `确定永久删除《${project.title}》吗？\n\n剧本、分集、角色、场景、分镜以及生成的图片/视频/音频文件都会删除，且无法恢复。`,
+    );
+    if (!confirmed) return;
+    setDeletingId(project.id);
+    setErr(null);
+    try {
+      const result = await deleteDrama(project.id);
+      const rows = await listProjects();
+      setDramas(rows);
+      if (selected?.id === project.id) {
+        setSelected(null);
+        setEpisodes([]);
+        if (rows.length) await selectDrama(rows[0]);
+      }
+      if (result.file_errors.length) {
+        setErr(`项目已删除，但有 ${result.file_errors.length} 个文件未能删除：${result.file_errors.join("；")}`);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "删除项目失败");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -153,14 +204,14 @@ export default function ProjectView({
         <div style={{ background: "var(--bg)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "auto" }}>
           <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6, borderBottom: "1px solid var(--border)" }}>
             <p style={label}>新建短剧项目</p>
-            <input value={dTitle} onChange={(e) => setDTitle(e.target.value)} placeholder="剧名，如：时光邮局" />
+            <input ref={dTitleRef} value={dTitle} onChange={(e) => setDTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addDrama(); }} placeholder="剧名，如：时光邮局" />
             <input value={dGenre} onChange={(e) => setDGenre(e.target.value)} placeholder="题材（可选），如：都市/悬疑" />
             <select value={dStyle} onChange={(e) => setDStyle(e.target.value)}>
               {STYLE_OPTIONS.map((s) => (
                 <option key={s.value} value={s.value}>{s.label}</option>
               ))}
             </select>
-            <button className="btn-primary" style={{ padding: "6px 12px", opacity: creatingD ? 0.7 : 1 }} onClick={addDrama} disabled={creatingD || !dTitle.trim()}>
+            <button className="btn-primary" style={{ padding: "6px 12px", opacity: creatingD || !dTitle.trim() ? 0.6 : 1 }} onClick={addDrama} disabled={creatingD}>
               {creatingD ? <Loader2 size={14} className="spin" /> : <FolderPlus size={14} />} 新建项目
             </button>
           </div>
@@ -172,6 +223,11 @@ export default function ProjectView({
                 <button
                   key={d.id}
                   onClick={() => selectDrama(d)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({ project: d, x: event.clientX, y: event.clientY });
+                  }}
+                  disabled={deletingId === d.id}
                   style={{
                     width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 4, borderRadius: 6, cursor: "pointer",
                     border: selected?.id === d.id ? "1px solid var(--green)" : "1px solid var(--border2)",
@@ -179,7 +235,7 @@ export default function ProjectView({
                     color: "var(--text)",
                   }}
                 >
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>{d.title}</div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{deletingId === d.id ? "正在删除…" : d.title}</div>
                   <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>
                     {d.genre || "未分类"} · {STYLE_OPTIONS.find((s) => s.value === d.style)?.label ?? d.style ?? "—"}
                   </div>
@@ -187,6 +243,25 @@ export default function ProjectView({
               ))
             )}
           </div>
+          {contextMenu && (
+            <div
+              role="menu"
+              onClick={(event) => event.stopPropagation()}
+              style={{
+                position: "fixed", left: Math.min(contextMenu.x, window.innerWidth - 170), top: Math.min(contextMenu.y, window.innerHeight - 52),
+                zIndex: 1000, width: 160, padding: 5, borderRadius: 7, border: "1px solid var(--border2)",
+                background: "var(--panel)", boxShadow: "0 10px 28px rgba(0,0,0,.45)",
+              }}
+            >
+              <button
+                role="menuitem"
+                onClick={() => removeDrama(contextMenu.project)}
+                style={{ width: "100%", padding: "7px 9px", justifyContent: "flex-start", color: "var(--red-t)", background: "transparent", border: 0 }}
+              >
+                <Trash2 size={14} /> 删除项目和文件
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 右：分集列表 + 新建 */}

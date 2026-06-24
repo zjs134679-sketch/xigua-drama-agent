@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { AlertTriangle, AudioLines, Image, LoaderCircle, Save, Sparkles, Users, Wand2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, AudioLines, Image, LoaderCircle, Save, Sparkles, Users, Volume2, Wand2 } from "lucide-react";
 import {
   assignVoices,
   extractFromEpisode,
@@ -10,6 +10,7 @@ import {
   listProjects,
   listVoices,
   polishPrompt,
+  previewVoice,
   updateCharacterPrompt,
   updateCharacterVoice,
   type ArtStyle,
@@ -22,6 +23,7 @@ import {
 import BatchBar from "../components/BatchBar";
 import AssetGenerationControls from "../components/AssetGenerationControls";
 import AssetHistoryStrip from "../components/AssetHistoryStrip";
+import ImageLightbox from "../components/ImageLightbox";
 import AdditionalInstructionField from "../components/AdditionalInstructionField";
 import { useBatchRun, type BatchOutcome } from "../components/useBatchRun";
 import { useSelection } from "../components/useSelection";
@@ -55,8 +57,26 @@ export default function CharacterAssetsView({
   const [notice, setNotice] = useState("");
   // Session-only page instruction; it is sent per generation and never saved with the asset prompt.
   const [extra, setExtra] = useState("");
+  const [preview, setPreview] = useState<string | null>(null);
+  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const sel = useSelection();
   const batch = useBatchRun();
+
+  const auditionVoice = async (voiceId: string | null | undefined) => {
+    if (!voiceId) { setNotice("请先给这个角色选一个音色，再试听。"); return; }
+    setPreviewingVoice(voiceId);
+    try {
+      const { audio_url } = await previewVoice(voiceId);
+      if (!audioRef.current) audioRef.current = new Audio();
+      audioRef.current.src = audio_url;
+      await audioRef.current.play();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "试听失败");
+    } finally {
+      setPreviewingVoice(null);
+    }
+  };
 
   useEffect(() => {
     listProjects().then((rows) => {
@@ -86,7 +106,7 @@ export default function CharacterAssetsView({
         setViewTypes((prev) => {
           const next = { ...prev };
           rows.forEach((c) => {
-            if (next[c.id] === undefined) next[c.id] = c.view_type ?? "full_body";
+            if (next[c.id] === undefined) next[c.id] = c.view_type ?? "turnaround";
           });
           return next;
         });
@@ -141,7 +161,7 @@ export default function CharacterAssetsView({
         node_id: nodeIds[character.id],
         resolution: resolutions[character.id] ?? "portrait_768x1024",
         extra: extra.trim() || undefined,
-        view_type: viewTypes[character.id] ?? "full_body",
+        view_type: viewTypes[character.id] ?? "turnaround",
       });
       return { ok: !result.blocked, message: result.blocked ? result.message ?? "提示词触发红线" : undefined };
     } catch (e) {
@@ -283,7 +303,7 @@ export default function CharacterAssetsView({
                 >
                   <input type="checkbox" checked={picked} onChange={() => sel.toggle(character.id)} disabled={batch.running} />
                 </label>
-                {character.image_url ? <img src={character.image_url} alt={character.name} /> : <Image size={30} />}
+                {character.image_url ? <img src={character.image_url} alt={character.name} onClick={() => setPreview(character.image_url)} style={{ cursor: "zoom-in" }} title="点击放大预览" /> : <Image size={30} />}
                 {generating === character.id && (
                   <span style={{ position: "absolute", right: 6, top: 6, zIndex: 2, color: "var(--green-t)" }}><LoaderCircle className="spin" size={16} /></span>
                 )}
@@ -319,11 +339,12 @@ export default function CharacterAssetsView({
                 </div>
                 <label style={{ fontSize: 11, color: "var(--text3)" }}>出图视角</label>
                 <select
-                  value={viewTypes[character.id] ?? "full_body"}
+                  value={viewTypes[character.id] ?? "turnaround"}
                   disabled={batch.running}
                   onChange={(e) => setViewTypes((prev) => ({ ...prev, [character.id]: e.target.value }))}
                   style={{ marginBottom: 6 }}
                 >
+                  <option value="turnaround">角色四视图设定图</option>
                   <option value="full_body">全身正面</option>
                   <option value="headshot">头像特写</option>
                   <option value="side">侧面</option>
@@ -336,15 +357,27 @@ export default function CharacterAssetsView({
                   onResolutionChange={(value) => setResolutions((previous) => ({ ...previous, [character.id]: value }))}
                   onNodeChange={(value) => setNodeIds((previous) => ({ ...previous, [character.id]: value }))}
                 />
-                <label style={{ fontSize: 11, color: "var(--text3)" }}>绑定音色</label>
-                <select
-                  value={character.voice_id ?? ""}
-                  disabled={bindingVoice === character.id || batch.running}
-                  onChange={(event) => bindVoice(character, event.target.value)}
-                >
-                  <option value="">未绑定</option>
-                  {voices.map((voice) => <option key={`${voice.provider}:${voice.voice_id}`} value={voice.voice_id}>{voice.voice_name} · {voice.provider}</option>)}
-                </select>
+                <label style={{ fontSize: 11, color: "var(--text3)" }}>绑定音色（可自选 + 试听）</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <select
+                    style={{ flex: 1, minWidth: 0 }}
+                    value={character.voice_id ?? ""}
+                    disabled={bindingVoice === character.id || batch.running}
+                    onChange={(event) => bindVoice(character, event.target.value)}
+                  >
+                    <option value="">未绑定</option>
+                    {voices.map((voice) => <option key={`${voice.provider}:${voice.voice_id}`} value={voice.voice_id}>{voice.voice_name}</option>)}
+                  </select>
+                  <button
+                    className="btn-secondary"
+                    style={{ flex: "none", padding: "5px 9px" }}
+                    disabled={!character.voice_id || previewingVoice != null || batch.running}
+                    onClick={() => auditionVoice(character.voice_id)}
+                    title="试听当前音色"
+                  >
+                    {previewingVoice === character.voice_id ? <LoaderCircle className="spin" size={13} /> : <Volume2 size={13} />} 试听
+                  </button>
+                </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button className="btn-secondary" style={{ flex: "none", padding: "5px 10px" }} disabled={saving != null || batch.running} onClick={() => savePrompt(character)} title="只保存提示词，不出图">
                     {saving === character.id ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} 保存
@@ -361,6 +394,7 @@ export default function CharacterAssetsView({
           {!characters.length && <div className="empty-state"><Users size={24} /> 当前项目暂无角色。点右上「AI 提取角色/场景」，从分集剧本自动提取。</div>}
         </div>
       </div>
+      <ImageLightbox src={preview} onClose={() => setPreview(null)} />
     </div>
   );
 }

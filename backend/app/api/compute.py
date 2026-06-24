@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -16,7 +18,43 @@ from app.services.compute import ImageJob, get_active_node
 router = APIRouter(prefix="/compute", tags=["compute"])
 
 
+def _extra_payload(row: ComputeNodeRow) -> dict:
+    if not row.extra:
+        return {}
+    try:
+        data = json.loads(row.extra)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _merge_extra(
+    current: str | None,
+    *,
+    model_settings: dict | None = None,
+    adapter_code: str | None = None,
+    adapter_filename: str | None = None,
+) -> str | None:
+    data: dict = {}
+    if current:
+        try:
+            parsed = json.loads(current)
+            if isinstance(parsed, dict):
+                data.update(parsed)
+        except (TypeError, json.JSONDecodeError):
+            data = {}
+    if model_settings is not None:
+        data["model_settings"] = model_settings
+    if adapter_code is not None:
+        data["adapter_code"] = adapter_code
+    if adapter_filename is not None:
+        data["adapter_filename"] = adapter_filename
+    return json.dumps(data, ensure_ascii=False) if data else None
+
+
 def _node_payload(row: ComputeNodeRow) -> dict:
+    extra = _extra_payload(row)
+    adapter_code = extra.get("adapter_code")
     return {
         "id": row.id,
         "name": row.name,
@@ -31,6 +69,10 @@ def _node_payload(row: ComputeNodeRow) -> dict:
         "token_configured": bool(row.token),
         "api_key_configured": bool(row.api_key),
         "api_key_masked": "••••••••" if row.api_key else None,
+        "model_settings": extra.get("model_settings") if isinstance(extra.get("model_settings"), dict) else {},
+        "adapter_filename": extra.get("adapter_filename") if isinstance(extra.get("adapter_filename"), str) else None,
+        "adapter_configured": isinstance(adapter_code, str) and bool(adapter_code.strip()),
+        "adapter_code": adapter_code if isinstance(adapter_code, str) else "",
         "created_at": str(row.created_at) if row.created_at else None,
         "updated_at": str(row.updated_at) if row.updated_at else None,
     }
@@ -114,6 +156,12 @@ def create_node(body: ComputeNodeCreate, db: Session = Depends(get_db)):
         priority=body.priority,
         is_active=body.is_active,
         capabilities=body.capabilities,
+        extra=_merge_extra(
+            None,
+            model_settings=body.model_settings,
+            adapter_code=body.adapter_code,
+            adapter_filename=body.adapter_filename,
+        ),
     )
     db.add(row)
     db.commit()
@@ -126,8 +174,16 @@ def update_node(node_id: int, body: ComputeNodeUpdate, db: Session = Depends(get
     row = db.query(ComputeNodeRow).filter(ComputeNodeRow.id == node_id).first()
     if not row:
         raise HTTPException(status_code=404, detail='Node not found')
-    for field, value in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    extra_fields = {
+        "model_settings": data.pop("model_settings", None),
+        "adapter_code": data.pop("adapter_code", None),
+        "adapter_filename": data.pop("adapter_filename", None),
+    }
+    for field, value in data.items():
         setattr(row, field, value)
+    if any(value is not None for value in extra_fields.values()):
+        row.extra = _merge_extra(row.extra, **extra_fields)
     db.commit()
     db.refresh(row)
     return _node_payload(row)

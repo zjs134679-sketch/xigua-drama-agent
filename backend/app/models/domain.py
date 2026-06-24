@@ -123,6 +123,7 @@ class Storyboard(Base, TimestampMixin):
     dialogue: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     duration: Mapped[int] = mapped_column(Integer, default=0)
+    speaking_character_id: Mapped[int | None] = mapped_column(Integer)
     composed_image: Mapped[str | None] = mapped_column(Text)
     first_frame_image: Mapped[str | None] = mapped_column(Text)
     last_frame_image: Mapped[str | None] = mapped_column(Text)
@@ -139,6 +140,22 @@ class StoryboardCharacter(Base):
     __tablename__ = "storyboard_characters"
     storyboard_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     character_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
+class StoryboardReview(Base, TimestampMixin):
+    """分镜监督 Agent 的版本化审核报告。"""
+
+    __tablename__ = "storyboard_reviews"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    episode_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    grade: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    severe_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    medium_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    minor_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    report_json: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str | None] = mapped_column(Text)
+    instruction: Mapped[str | None] = mapped_column(Text)
 
 
 class AiServiceConfig(Base, TimestampMixin):

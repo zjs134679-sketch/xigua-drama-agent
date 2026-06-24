@@ -18,6 +18,7 @@ from app.api.script import router as script_router
 from app.api.settings import router as settings_router
 from app.api.skills import router as skills_router
 from app.api.storyboard import router as storyboard_router
+from app.api.storyboard_review import router as storyboard_review_router
 from app.api.timeline import router as timeline_router
 from app.api.vendors import router as vendors_router
 from app.api.video import router as video_router
@@ -57,6 +58,7 @@ app.include_router(projects_router)
 app.include_router(script_router)
 app.include_router(settings_router)
 app.include_router(storyboard_router)
+app.include_router(storyboard_review_router)
 app.include_router(skills_router)
 app.include_router(extract_router)
 app.include_router(styles_router)

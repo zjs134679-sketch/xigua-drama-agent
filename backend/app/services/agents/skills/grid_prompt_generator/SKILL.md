@@ -1,108 +1,101 @@
 ---
 name: grid-image-generator
-description: 图片提示词生成指南 — 角色、场景、宫格图三类提示词规范
+description: 图片提示词生成指南 — 角色、场景、宫格图三类中文提示词规范
 ---
 
 # 图片提示词生成指南
 
-本 SKILL 对应 `grid_prompt_generator` Agent，支持生成三类图片提示词：
+本 SKILL 对应 `grid_prompt_generator` Agent，支持生成三类中文图片提示词：
 
-1. **角色图片提示词** — 角色外貌与气质
-2. **场景图片提示词** — 场景氛围与光线
-3. **宫格图提示词** — 多镜头网格拼图
+1. **角色图片提示词** — 角色外貌、身份一致性、服装和气质。
+2. **场景图片提示词** — 场景空间、氛围、光线和纯背景约束。
+3. **宫格图提示词** — 多镜头网格拼图。
 
 详细模板见 `reference/` 目录。
 
----
+## 总规则
+
+- 所有提示词必须使用中文，不要英文，不要中英混杂。
+- 可保留模型/文件名/节点名等技术名词，但画面描述必须中文。
+- 提示词要适合直接用于 AI 出图：视觉明确、构图明确、限制明确。
+- 必须包含“不要文字、水印、logo、字幕、UI”。
 
 ## 角色图片提示词
 
 参考：`reference/character-prompt.md`
 
-### 模板结构
-```
-[appearance], [personality/temperament], [role], [cinematic portrait], [high quality], [consistent art style], [no text, no watermark]
-```
+生成规则：
 
-### 生成规则
-- 以 `appearance`（外貌描述）为核心
-- `personality` 决定气质基调（内敛/张扬/神秘等）
-- `role` 决定服装和道具风格
-- 必须包含 `cinematic portrait` + `consistent art style`
-- 避免出现文字、签名、水印
-
----
+- 以角色 `appearance` 外貌描述为核心。
+- `personality` 决定气质基调。
+- `role` 决定服装、身份和时代背景。
+- 必须强调同一张脸、同一发型、同一身材、同一套衣服。
+- 默认使用浅灰干净背景，适合作为分镜人物参考图。
 
 ## 场景图片提示词
 
 参考：`reference/scene-prompt.md`
 
-### 模板结构
-```
-[location], [time period], [lighting atmosphere], [scene description], [cinematic scene], [high quality], [consistent art style], [no text, no watermark]
-```
+生成规则：
 
-### 生成规则
-- 以 `location`（地点）为基础
-- `time` 决定光线色调（白天/夜晚/黄昏）
-- 场景氛围词：atmospheric, moody, warm, cold 等
-- 必须包含 `cinematic scene` + `consistent art style`
-- 避免出现文字、签名、水印
-
----
+- 以 `location` 地点为基础。
+- `time` 决定光线色调。
+- 必须描述空间结构、门窗位置、关键陈设、材质和气氛。
+- 必须明确“纯背景环境图，不要人物、不要人群、不要人体轮廓”。
 
 ## 宫格图提示词
 
 参考：`reference/shot-prompt.md`
 
-### 三种模式
+### 首帧模式
 
-#### 首帧模式 (first_frame)
-每个格子 = 一个镜头的起始画面，但必须严格生成用户指定的 `rows x cols` 总格数。
-
-```
-[rows x cols grid layout], exactly [rows*cols] visible panels, consistent art style, [style description],
-格1: [shot 1 opening scene],
-格2: [shot 2 opening scene],
-格3: [shot 3 opening scene],
-...
-格N: [opening scene],
-high quality, cinematic lighting, no merged panels, no missing panels, no text, no watermark
-```
-
-#### 首尾帧模式 (first_last)
-保持首尾帧节奏感，但仍然必须严格生成用户指定的 `rows x cols` 总格数，不允许偷偷改成 `Nx2`。
+每个格子是一个镜头的起始画面，必须严格生成用户指定的 `行 x 列` 总格数。
 
 ```
-[rows x cols grid layout], exactly [rows*cols] visible panels, consistent art style, [style description],
-格1: [opening beat],
-格2: [closing beat],
-格3: [opening beat],
-格4: [closing beat],
-...
-high quality, cinematic, continuous motion implied, no merged panels, no missing panels, no text
+[行 x 列宫格布局]，正好 [总格数] 个可见画格，统一短剧画风；
+格1：[镜头1起始画面中文描述]；
+格2：[镜头2起始画面中文描述]；
+格3：[镜头3起始画面中文描述]；
+……
+画质要求：电影感光线，高细节，清晰对焦；
+限制：不要合并格子，不要缺少格子，不要文字、水印、logo、字幕、UI。
 ```
 
-#### 多参考模式 (multi_ref)
-所有格子都是同一镜头的不同角度/构图参考，但仍然必须严格生成用户指定的 `rows x cols` 总格数。
+### 首尾帧模式
+
+首尾帧要有节奏感，但仍然必须严格生成用户指定的 `行 x 列` 总格数。
 
 ```
-[rows x cols grid layout], exactly [rows*cols] visible panels, same scene different angles, [style description],
-[main scene description],
-格1: wide shot establishing,
-格2: medium shot character focus,
-格3: close-up detail,
-格4: dramatic angle,
-...
-consistent lighting and color palette, no merged panels, no missing panels, no text
+[行 x 列宫格布局]，正好 [总格数] 个可见画格，统一短剧画风；
+格1：[镜头起始动作]；
+格2：[镜头结束动作]；
+格3：[下一个起始动作]；
+格4：[下一个结束动作]；
+……
+画质要求：电影感，动作连续感，真实摄影质感；
+限制：不要合并格子，不要缺少格子，不要文字、水印、logo、字幕、UI。
+```
+
+### 多参考模式
+
+所有格子是同一镜头的不同角度/构图参考，仍然必须严格生成用户指定的 `行 x 列` 总格数。
+
+```
+[行 x 列宫格布局]，正好 [总格数] 个可见画格，同一场景不同角度；
+[主场景中文描述]；
+格1：远景建立空间；
+格2：中景突出角色；
+格3：特写突出细节；
+格4：戏剧化角度；
+……
+保持统一光线和色调；不要合并格子，不要缺少格子，不要文字、水印、logo、字幕、UI。
 ```
 
 ### 通用规则
-1. 提示词使用**英文**
-2. 必须明确写出用户指定的 `rows x cols grid layout`
-3. 必须包含 `consistent art style` 保持风格统一
-4. 必须明确要求 `exactly N visible panels`
-5. 必须明确要求 `no merged panels, no missing panels`
-6. 避免在格子间出现分割线的描述
-7. 尺寸建议：每格 960x540，总图 = 960×cols × 540×rows
-8. 当存在参考图映射时，统一使用 `图片1/图片2/...` 指代参考图，不要把它和 `格1/格2/...` 混用
+
+1. 提示词必须使用中文。
+2. 必须明确写出用户指定的 `行 x 列宫格布局`。
+3. 必须明确要求 `正好 N 个可见画格`。
+4. 必须明确要求 `不要合并格子，不要缺少格子`。
+5. 避免描述格子间分割线。
+6. 当存在参考图映射时，统一使用 `图片1/图片2/...` 指代参考图，不要和 `格1/格2/...` 混用。

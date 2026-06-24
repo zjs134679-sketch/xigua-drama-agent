@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Image as ImageIcon, Layers, Loader2, Save, Sparkles, Wand2 } from "lucide-react";
+import { AlertTriangle, Edit3, Image as ImageIcon, Layers, Loader2, RotateCcw, Save, Sparkles, Wand2, X } from "lucide-react";
 import {
   batchGenerateStoryboardPrompts,
   generateStoryboardImage,
   generateStoryboards,
   listStoryboards,
   listComputeNodes,
+  updateStoryboard,
   updateStoryboardPrompt,
   type ComplianceHit,
   type AssetResolution,
@@ -13,11 +14,13 @@ import {
   type EpisodeSummary,
   type Project,
   type Storyboard,
+  type StoryboardUpdate,
 } from "../api/client";
 import BatchBar from "../components/BatchBar";
 import AssetGenerationControls from "../components/AssetGenerationControls";
 import AssetHistoryStrip from "../components/AssetHistoryStrip";
 import AdditionalInstructionField from "../components/AdditionalInstructionField";
+import ImageLightbox from "../components/ImageLightbox";
 import { useBatchRun, type BatchOutcome } from "../components/useBatchRun";
 import { useSelection } from "../components/useSelection";
 
@@ -36,6 +39,8 @@ export default function StoryboardView({
   const [breaking, setBreaking] = useState(false);
   const [imaging, setImaging] = useState<number | null>(null);
   const [saving, setSaving] = useState<number | null>(null);
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<StoryboardUpdate>({});
   const [polishing, setPolishing] = useState(false);
   const [prompts, setPrompts] = useState<Record<number, string>>({});
   const [nodes, setNodes] = useState<ComputeNodeRecord[]>([]);
@@ -43,6 +48,7 @@ export default function StoryboardView({
   const [nodeIds, setNodeIds] = useState<Record<number, number | undefined>>({});
   const [err, setErr] = useState<{ message?: string; hits?: ComplianceHit[]; level?: string } | null>(null);
   const [extra, setExtra] = useState("");
+  const [preview, setPreview] = useState<string | null>(null);
   const sel = useSelection();
   const batch = useBatchRun();
 
@@ -73,6 +79,53 @@ export default function StoryboardView({
       await updateStoryboardPrompt(sb.id, prompts[sb.id] ?? "");
     } catch {
       setErr({ message: "保存提示词失败" });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const openEditor = (sb: Storyboard) => {
+    setEditing(sb.id);
+    setEditDraft({
+      title: sb.title ?? "",
+      location: sb.location ?? "",
+      time: sb.time ?? "",
+      shot_type: sb.shot_type ?? "",
+      angle: sb.angle ?? "",
+      movement: sb.movement ?? "",
+      action: sb.action ?? "",
+      dialogue: sb.dialogue ?? "",
+      sound_effect: sb.sound_effect ?? "",
+      duration: sb.duration,
+      image_prompt: prompts[sb.id] ?? sb.image_prompt ?? "",
+      video_prompt: sb.video_prompt ?? "",
+    });
+  };
+
+  const saveEdits = async (sb: Storyboard) => {
+    setSaving(sb.id);
+    setErr(null);
+    try {
+      const updated = await updateStoryboard(sb.id, editDraft);
+      setShots((previous) => previous.map((item) => item.id === sb.id ? updated : item));
+      setPrompts((previous) => ({ ...previous, [sb.id]: updated.image_prompt ?? "" }));
+      setEditing(null);
+      setEditDraft({});
+    } catch (reason) {
+      setErr({ message: reason instanceof Error ? reason.message : "保存分镜修改失败" });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const saveReferenceOverride = async (sb: Storyboard, urls: string[] | null) => {
+    setSaving(sb.id);
+    setErr(null);
+    try {
+      const updated = await updateStoryboard(sb.id, { reference_images: urls });
+      setShots((previous) => previous.map((item) => item.id === sb.id ? updated : item));
+    } catch (reason) {
+      setErr({ message: reason instanceof Error ? reason.message : "保存参考图设置失败" });
     } finally {
       setSaving(null);
     }
@@ -305,7 +358,7 @@ export default function StoryboardView({
                     <input type="checkbox" checked={picked} onChange={() => sel.toggle(s.id)} disabled={batch.running} />
                   </label>
                   {s.image_url ? (
-                    <img src={s.image_url} alt={s.title ?? ""} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    <img src={s.image_url} alt={s.title ?? ""} onClick={() => setPreview(s.image_url)} title="点击放大预览" style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "zoom-in" }} />
                   ) : (
                     <ImageIcon size={24} color="var(--text3)" />
                   )}
@@ -322,20 +375,92 @@ export default function StoryboardView({
                   currentImageUrl={s.image_url}
                   onUse={(imageUrl) => setShots((previous) => previous.map((item) => item.id === s.id ? { ...item, image_url: imageUrl } : item))}
                 />
+                <div style={{ padding: "6px 8px", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", background: "var(--panel2)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: s.reference_images.length ? 5 : 0 }}>
+                    <span style={{ fontSize: 10.5, color: "var(--text3)", flex: 1 }}>
+                      {s.reference_mode === "auto" ? "智能参考" : "手动锁定"} · {s.reference_images.length} 张
+                    </span>
+                    {s.reference_mode === "manual" && (
+                      <button
+                        className="storyboard-edit-toggle"
+                        title="恢复按剧情自动选择参考图"
+                        disabled={saving === s.id || batch.running}
+                        onClick={() => saveReferenceOverride(s, null)}
+                      >
+                        <RotateCcw size={11} />
+                      </button>
+                    )}
+                  </div>
+                  {s.reference_images.length > 0 && (
+                    <div style={{ display: "flex", gap: 5, overflowX: "auto" }}>
+                      {s.reference_images.map((reference, index) => (
+                        <div key={`${reference.url}-${index}`} style={{ position: "relative", flex: "0 0 48px" }} title={reference.label}>
+                          <img
+                            src={reference.preview_url}
+                            alt={reference.label}
+                            onClick={() => setPreview(reference.preview_url)}
+                            style={{ width: 48, height: 36, objectFit: "cover", borderRadius: 4, border: "1px solid var(--border)", cursor: "zoom-in" }}
+                          />
+                          <button
+                            title={`不再引用：${reference.label}`}
+                            disabled={saving === s.id || batch.running}
+                            onClick={() => saveReferenceOverride(s, s.reference_images.filter((_, i) => i !== index).map((item) => item.url))}
+                            style={{ position: "absolute", right: -3, top: -3, width: 14, height: 14, borderRadius: 7, border: 0, padding: 0, background: "var(--bg)", color: "var(--text2)", cursor: "pointer", display: "grid", placeItems: "center" }}
+                          >
+                            <X size={9} />
+                          </button>
+                          <div style={{ fontSize: 9, color: "var(--text3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{reference.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 5, flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500 }}>{s.title || `镜头 ${s.storyboard_number}`}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 500 }}>{s.title || `镜头 ${s.storyboard_number}`}</div>
+                    <button className="storyboard-edit-toggle" onClick={() => editing === s.id ? setEditing(null) : openEditor(s)} title="手动修改完整分镜">
+                      {editing === s.id ? <X size={12} /> : <Edit3 size={12} />}
+                    </button>
+                  </div>
                   <div style={{ fontSize: 11, color: "var(--text3)" }}>
                     {[s.shot_type, s.location, s.duration ? `${s.duration}s` : null].filter(Boolean).join(" · ")}
                   </div>
-                  {s.action && <div style={{ fontSize: 11, color: "var(--text2)", lineHeight: 1.4 }}>{s.action}</div>}
-                  <label style={{ fontSize: 10.5, color: "var(--text3)", marginTop: 2 }}>画面提示词（可编辑）</label>
-                  <textarea
-                    value={prompts[s.id] ?? ""}
-                    onChange={(e) => setPrompts((p) => ({ ...p, [s.id]: e.target.value }))}
-                    rows={3}
-                    style={{ resize: "vertical", fontSize: 11, lineHeight: 1.45 }}
-                    placeholder="这个镜头的画面提示词…"
-                  />
+                  {editing === s.id ? (
+                    <div className="storyboard-edit-panel">
+                      <div className="storyboard-edit-grid">
+                        <label>标题<input value={editDraft.title ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, title: e.target.value }))} /></label>
+                        <label>时长（秒）<input type="number" min={1} max={60} value={editDraft.duration ?? 1} onChange={(e) => setEditDraft((p) => ({ ...p, duration: Number(e.target.value) }))} /></label>
+                        <label>场景<input value={editDraft.location ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, location: e.target.value }))} /></label>
+                        <label>时间<input value={editDraft.time ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, time: e.target.value }))} /></label>
+                        <label>景别<input value={editDraft.shot_type ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, shot_type: e.target.value }))} /></label>
+                        <label>角度<input value={editDraft.angle ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, angle: e.target.value }))} /></label>
+                        <label>运镜<input value={editDraft.movement ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, movement: e.target.value }))} /></label>
+                        <label>音效<input value={editDraft.sound_effect ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, sound_effect: e.target.value }))} /></label>
+                      </div>
+                      <label>动作<textarea rows={2} value={editDraft.action ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, action: e.target.value }))} /></label>
+                      <label>台词<textarea rows={2} value={editDraft.dialogue ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, dialogue: e.target.value }))} /></label>
+                      <label>画面提示词<textarea rows={3} value={editDraft.image_prompt ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, image_prompt: e.target.value }))} /></label>
+                      <label>视频提示词<textarea rows={3} value={editDraft.video_prompt ?? ""} onChange={(e) => setEditDraft((p) => ({ ...p, video_prompt: e.target.value }))} /></label>
+                      <div className="storyboard-edit-actions">
+                        <button className="btn-secondary" onClick={() => { setEditing(null); setEditDraft({}); }}><X size={12} /> 取消</button>
+                        <button className="btn-primary" onClick={() => saveEdits(s)} disabled={saving === s.id}>
+                          {saving === s.id ? <Loader2 size={12} className="spin" /> : <Save size={12} />} 保存修改
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {s.action && <div style={{ fontSize: 11, color: "var(--text2)", lineHeight: 1.4 }}>{s.action}</div>}
+                      <label style={{ fontSize: 10.5, color: "var(--text3)", marginTop: 2 }}>画面提示词（可编辑）</label>
+                      <textarea
+                        value={prompts[s.id] ?? ""}
+                        onChange={(e) => setPrompts((p) => ({ ...p, [s.id]: e.target.value }))}
+                        rows={3}
+                        style={{ resize: "vertical", fontSize: 11, lineHeight: 1.45 }}
+                        placeholder="这个镜头的画面提示词…"
+                      />
+                    </>
+                  )}
                   <AssetGenerationControls
                     resolution={resolutions[s.id] ?? "landscape_1024x576"}
                     nodeId={nodeIds[s.id]}
@@ -344,7 +469,7 @@ export default function StoryboardView({
                     onResolutionChange={(value) => setResolutions((previous) => ({ ...previous, [s.id]: value }))}
                     onNodeChange={(value) => setNodeIds((previous) => ({ ...previous, [s.id]: value }))}
                   />
-                  <div style={{ marginTop: "auto", display: "flex", gap: 6 }}>
+                  {editing !== s.id && <div style={{ marginTop: "auto", display: "flex", gap: 6 }}>
                     <button
                       className="btn-secondary"
                       style={{ flex: "none", padding: "5px 9px", opacity: saving === s.id ? 0.7 : 1 }}
@@ -362,7 +487,7 @@ export default function StoryboardView({
                     >
                       {imaging === s.id ? <Loader2 size={13} className="spin" /> : <ImageIcon size={13} />} {s.image_url ? "重新出图" : "出图"}
                     </button>
-                  </div>
+                  </div>}
                 </div>
               </div>
               );
@@ -370,6 +495,7 @@ export default function StoryboardView({
           </div>
         )}
       </div>
+      <ImageLightbox src={preview} onClose={() => setPreview(null)} />
     </div>
   );
 }

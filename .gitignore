@@ -35,6 +35,9 @@ auth-server/secret_dict/*.txt
 # 运行时 / 本地（根级 data 与 .claude 不入仓）
 /data/
 /.claude/
+/.run/
+/.devlogs/
+/logs/
 
 # OS
 .DS_Store

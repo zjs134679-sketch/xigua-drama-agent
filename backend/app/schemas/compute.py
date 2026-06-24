@@ -25,6 +25,9 @@ class ComputeNodeCreate(BaseModel):
     priority: int = 100
     is_active: bool = True
     capabilities: str | None = None
+    model_settings: dict | None = None
+    adapter_code: str | None = None
+    adapter_filename: str | None = None
 
 
 class ComputeNodeUpdate(BaseModel):
@@ -38,3 +41,6 @@ class ComputeNodeUpdate(BaseModel):
     priority: int | None = None
     is_active: bool | None = None
     capabilities: str | None = None
+    model_settings: dict | None = None
+    adapter_code: str | None = None
+    adapter_filename: str | None = None

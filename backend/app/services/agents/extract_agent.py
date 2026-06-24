@@ -11,14 +11,14 @@ from app.services.agents.script_agent import load_skill
 from app.services.llm.client import chat_text, resolve_llm
 
 _INSTRUCTION = """
-Read the script/novel content below and extract actual [characters] [scenes] [props] that appear in the text.
-Output strictly a single JSON object (no explanation, no markdown code blocks), with the following structure:
+阅读下面的剧本/小说内容，提取文本中真实出现的【角色】【场景】【道具】。
+严格输出一个 JSON 对象（不要解释，不要 Markdown 代码块），结构如下：
 {
-  "characters": [{"name":"character name in Chinese","role":"protagonist/supporting/extra","appearance":"appearance description in Chinese","personality":"personality tags in Chinese","description":"background and relationships in Chinese"}],
-  "scenes": [{"location":"location in Chinese","time":"time of day in Chinese","atmosphere":"atmosphere in Chinese","prompt":"English background image prompt (pure background, no people)"}],
-  "props": [{"name":"prop name in Chinese","type":"type","description":"description in Chinese","prompt":"English image prompt"}]
+  "characters": [{"name":"中文角色名","role":"主角/配角/龙套","appearance":"中文外貌描述","personality":"中文性格标签","description":"中文背景和人物关系"}],
+  "scenes": [{"location":"中文地点","time":"中文时间","atmosphere":"中文气氛","prompt":"中文场景出图提示词，纯背景，不要人物"}],
+  "props": [{"name":"中文道具名","type":"中文类型","description":"中文描述","prompt":"中文道具出图提示词"}]
 }
-Only extract what actually appears in the content; use empty arrays if none found. Must be valid JSON.
+只提取内容中实际出现的项目；没有则用空数组。必须是合法 JSON。所有 prompt 必须使用中文，不要英文。
 """
 
 

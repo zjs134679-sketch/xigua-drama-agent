@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,14 +13,14 @@ from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
-from app.models.domain import Episode, Storyboard
+from app.models.domain import Character, Episode, Storyboard
 from app.schemas.storyboard import (
     BatchDeleteRequest,
     BatchGenerateImageRequest,
     BatchGeneratePromptRequest,
     StoryboardGenerateRequest,
     StoryboardImageRequest,
-    StoryboardPromptUpdate,
+    StoryboardUpdate,
 )
 from app.services.agents.storyboard_agent import break_storyboards, save_storyboards
 from app.services.asset_generation import (
@@ -30,11 +31,13 @@ from app.services.asset_generation import (
 )
 from app.services.compliance import FilterResult, check, enforce
 from app.services.llm.client import LLMNotConfigured
+from app.services.storyboard_references import resolve_storyboard_image_references
 
 router = APIRouter(prefix="/storyboard", tags=["storyboard"])
 
 
-def storyboard_view(sb: Storyboard) -> dict:
+def storyboard_view(sb: Storyboard, db: Session) -> dict:
+    reference_rows, reference_mode = resolve_storyboard_image_references(db, sb)
     return {
         "id": sb.id,
         "episode_id": sb.episode_id,
@@ -46,12 +49,29 @@ def storyboard_view(sb: Storyboard) -> dict:
         "angle": sb.angle,
         "movement": sb.movement,
         "action": sb.action,
+        "result": sb.result,
         "dialogue": sb.dialogue,
         "atmosphere": sb.atmosphere,
         "image_prompt": sb.image_prompt,
+        "video_prompt": sb.video_prompt,
+        "bgm_prompt": sb.bgm_prompt,
+        "sound_effect": sb.sound_effect,
+        "description": sb.description,
         "duration": sb.duration,
+        "speaking_character_id": sb.speaking_character_id,
         "image_url": sb.composed_image,
         "status": sb.status,
+        "reference_mode": reference_mode,
+        "reference_images": [
+            {
+                "url": row.url,
+                "preview_url": row.url if row.url.startswith(("/", "http://", "https://")) else "/oss/" + Path(row.url).name,
+                "kind": row.kind,
+                "label": row.label,
+                "source_storyboard_id": row.source_storyboard_id,
+            }
+            for row in reference_rows
+        ],
     }
 
 
@@ -85,7 +105,7 @@ def list_storyboards(episode_id: int, db: Session = Depends(get_db)) -> list[dic
         .where(Storyboard.episode_id == episode_id, Storyboard.deleted_at.is_(None))
         .order_by(Storyboard.storyboard_number)
     ).all()
-    return [storyboard_view(sb) for sb in rows]
+    return [storyboard_view(sb, db) for sb in rows]
 
 
 @router.post("/generate")
@@ -124,7 +144,7 @@ def generate_storyboards(req: StoryboardGenerateRequest, db: Session = Depends(g
     return {
         "episode_id": ep.id,
         "count": count,
-        "storyboards": [storyboard_view(sb) for sb in rows],
+        "storyboards": [storyboard_view(sb, db) for sb in rows],
         "warn": input_result.warn or output_result.warn,
         "hits": _hits(input_result, output_result),
     }
@@ -176,14 +196,29 @@ async def storyboard_image(storyboard_id: int, body: StoryboardImageRequest, db:
 
 
 @router.patch("/{storyboard_id}")
-def update_storyboard_prompt(storyboard_id: int, body: StoryboardPromptUpdate, db: Session = Depends(get_db)) -> dict:
+def update_storyboard(storyboard_id: int, body: StoryboardUpdate, db: Session = Depends(get_db)) -> dict:
     sb = db.get(Storyboard, storyboard_id)
     if sb is None or sb.deleted_at is not None:
         raise HTTPException(404, "分镜不存在")
-    sb.image_prompt = body.image_prompt
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(400, "没有需要保存的修改")
+    speaking_character_id = changes.get("speaking_character_id")
+    if speaking_character_id is not None:
+        episode = db.get(Episode, sb.episode_id)
+        character = db.get(Character, speaking_character_id)
+        if character is None or character.deleted_at is not None:
+            raise HTTPException(404, "说话角色不存在")
+        if episode is None or character.drama_id != episode.drama_id:
+            raise HTTPException(400, "说话角色不属于当前剧本")
+    for field, value in changes.items():
+        if field == "reference_images":
+            sb.reference_images = None if value is None else json.dumps(value, ensure_ascii=False)
+        else:
+            setattr(sb, field, value)
     db.commit()
     db.refresh(sb)
-    return storyboard_view(sb)
+    return storyboard_view(sb, db)
 
 
 @router.post("/batch-delete")

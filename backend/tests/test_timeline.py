@@ -7,9 +7,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.api import timeline as timeline_api
-from app.api.timeline import ExportRequest, build_timeline
+from fastapi import HTTPException
+
+from app.api.timeline import ExportRequest, TTSRequest, build_timeline
 from app.core.db import Base
-from app.models.domain import Episode, Storyboard
+from app.models.domain import Character, Episode, Storyboard
 from app.models.system import Violation
 from app.services.compliance import enforce
 from app.services.compliance.filter import FilterResult, Hit
@@ -64,6 +66,56 @@ def test_timeline_is_assembled_in_storyboard_order_with_accumulated_start():
     assert timeline.duration == 8
     assert [clip.audio_url for clip in timeline.tracks.voiceover.clips] == ["voice-2.wav"]
     assert [clip.subtitle_text for clip in timeline.tracks.subtitle.clips] == ["第一句字幕", "第二句字幕"]
+    db.close()
+
+
+def test_single_storyboard_tts_requires_bound_speaking_character():
+    db = make_db()
+    episode = seed_episode(db)
+    storyboard = db.scalars(select(Storyboard).where(Storyboard.episode_id == episode.id)).first()
+
+    try:
+        __import__("asyncio").run(timeline_api.generate_storyboard_tts(storyboard.id, TTSRequest(username="local"), db))
+        raise AssertionError("未绑定说话角色时必须拒绝生成")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "说话角色" in exc.detail
+    db.close()
+
+
+def test_single_storyboard_tts_generates_only_selected_clip(monkeypatch):
+    db = make_db()
+    episode = seed_episode(db)
+    character = Character(drama_id=episode.drama_id, name="角色甲", voice_style="zh-CN-YunxiNeural")
+    db.add(character)
+    db.flush()
+    storyboard = db.scalars(
+        select(Storyboard).where(
+            Storyboard.episode_id == episode.id,
+            Storyboard.tts_audio_url.is_(None),
+        )
+    ).first()
+    storyboard.speaking_character_id = character.id
+    db.commit()
+    calls: list[int] = []
+
+    async def fake_synthesize(session, *, storyboard_id, username=None):
+        calls.append(storyboard_id)
+        row = session.get(Storyboard, storyboard_id)
+        row.tts_audio_url = "/oss/single-voice.mp3"
+        session.commit()
+        return row
+
+    monkeypatch.setattr(timeline_api, "ensure_active_user", lambda *_args: None)
+    monkeypatch.setattr(timeline_api, "synthesize_storyboard_tts", fake_synthesize)
+
+    result = __import__("asyncio").run(
+        timeline_api.generate_storyboard_tts(storyboard.id, TTSRequest(username="local"), db)
+    )
+
+    assert calls == [storyboard.id]
+    assert result["audio_url"] == "/oss/single-voice.mp3"
+    assert len(build_timeline(db, episode.id).tracks.voiceover.clips) == 2
     db.close()
 
 

@@ -14,6 +14,7 @@ from app.models.domain import (  # noqa: F401
     Prop,
     Scene,
     Storyboard,
+    StoryboardReview,
     VideoGeneration,
     VideoMerge,
 )

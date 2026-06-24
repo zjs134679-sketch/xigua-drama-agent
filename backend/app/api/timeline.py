@@ -16,6 +16,7 @@ from app.core.db import get_db
 from app.models.domain import Asset, Episode, Storyboard, VideoMerge
 from app.services.compliance import check
 from app.services.compliance.enforce import record_violation
+from app.services.tts import TTSError, TTSComplianceBlocked, synthesize_episode_tts, synthesize_storyboard_tts
 from app.services.video_compose import FfmpegNotFoundError, VideoComposeError, compose_video
 
 router = APIRouter(prefix="/timeline", tags=["timeline"])
@@ -57,6 +58,10 @@ class TimelineSaveRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
+    username: str | None = None
+
+
+class TTSRequest(BaseModel):
     username: str | None = None
 
 
@@ -240,6 +245,26 @@ def _store_timeline(db: Session, document: TimelineDocument) -> VideoMerge:
     return merge
 
 
+def _refresh_generated_audio_tracks(db: Session, episode_id: int) -> None:
+    """Keep saved manual video/music ordering while pulling current DB voice/subtitle clips."""
+    stored = _latest_merge(db, episode_id)
+    if not stored or not stored.scenes:
+        return
+    document = get_timeline_document(db, episode_id)
+    fresh = build_timeline(db, episode_id)
+    tracks = TimelineTracks(
+        video=document.tracks.video,
+        voiceover=fresh.tracks.voiceover,
+        subtitle=fresh.tracks.subtitle,
+        music=document.tracks.music,
+    )
+    try:
+        refreshed = _normalise_timeline(db, episode_id, tracks)
+    except HTTPException:
+        refreshed = fresh
+    _store_timeline(db, refreshed)
+
+
 @router.get("/{episode_id}")
 def get_timeline(episode_id: int, db: Session = Depends(get_db)) -> dict:
     return get_timeline_document(db, episode_id).model_dump(mode="json")
@@ -323,3 +348,62 @@ def export_timeline(
     episode.duration = round(result.duration)
     db.commit()
     return {"status": "completed", "merged_url": merged_url, "error": None, "duration": result.duration}
+
+
+@router.post("/storyboards/{storyboard_id}/tts")
+async def generate_storyboard_tts(
+    storyboard_id: int,
+    body: TTSRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Generate voice for one selected storyboard only."""
+    storyboard = db.get(Storyboard, storyboard_id)
+    if storyboard is None or storyboard.deleted_at is not None:
+        raise HTTPException(404, "分镜不存在")
+    if storyboard.speaking_character_id is None:
+        raise HTTPException(400, "请先选择说话角色")
+    username = body.username if body else None
+    ensure_active_user(db, username)
+    try:
+        row = await synthesize_storyboard_tts(db, storyboard_id=storyboard_id, username=username)
+    except TTSComplianceBlocked as exc:
+        return JSONResponse(
+            status_code=451,
+            content={
+                "blocked": True,
+                "banned": bool(exc.enforcement.get("banned")),
+                "message": "台词触发红线，配音已拦截",
+            },
+        )
+    except TTSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _refresh_generated_audio_tracks(db, storyboard.episode_id)
+    return {"storyboard_id": row.id, "status": "completed", "audio_url": row.tts_audio_url}
+
+
+@router.post("/{episode_id}/tts")
+async def generate_timeline_tts(
+    episode_id: int,
+    body: TTSRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """给这一集所有有台词的分镜生成真实配音（edge-tts），写回 tts_audio_url，
+    并刷新已存时间线的配音/字幕轨，让导出能直接用上。"""
+    if db.get(Episode, episode_id) is None:
+        raise HTTPException(404, "分集不存在")
+    username = body.username if body else None
+    ensure_active_user(db, username)
+
+    results = await synthesize_episode_tts(db, episode_id=episode_id, username=username)
+
+    # 已存了时间线 → 用最新分镜重建配音/字幕轨，保留视频/音乐轨的人工编辑
+    _refresh_generated_audio_tracks(db, episode_id)
+
+    completed = sum(1 for r in results if r["status"] == "completed")
+    return {
+        "results": results,
+        "completed": completed,
+        "total": len(results),
+        "blocked": any(r["status"] == "blocked" for r in results),
+        "banned": any(r.get("banned") for r in results),
+    }

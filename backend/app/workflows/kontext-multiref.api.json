@@ -51,7 +51,7 @@
   },
   "12": {
     "class_type": "FluxKontextMultiReferenceLatentMethod",
-    "inputs": { "conditioning": ["11", 0], "method": "index" }
+    "inputs": { "conditioning": ["11", 0], "reference_latents_method": "index" }
   },
   "13": {
     "class_type": "EmptySD3LatentImage",

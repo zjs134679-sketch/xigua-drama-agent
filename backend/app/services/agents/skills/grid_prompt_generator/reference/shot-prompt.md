@@ -3,21 +3,21 @@
 ## 模板结构
 
 ```
-[Shot type] shot, [camera angle], [art style].
-[Character(s) description and action].
-[Environment and setting].
-[Lighting and atmosphere].
-Style: cinematic, high quality, [additional style tags].
+[景别]，[机位角度]，[镜头构图]。
+人物：[角色外观/身份锁定]，[动作]，[表情]，[人物之间的位置关系]。
+环境：[地点]，[关键背景元素]，[空间布局]。
+光线气氛：[时间]，[主光源方向]，[色调]，[情绪氛围]。
+画质要求：电影感画面，高细节，清晰对焦，真实摄影质感，统一短剧画风。
+限制：不要文字、水印、logo、字幕、UI；不要额外未命名人物。
 ```
 
 ## 示例
 
 ```
-Medium close-up shot, slightly low angle, cinematic anime style.
-A young man with messy dark hair grips a rusty wrench tightly,
-his face illuminated by a single overhead fluorescent light,
-sweat visible on his forehead, determined expression.
-Dimly lit repair shop interior with tool boards and scattered parts in background.
-Harsh overhead lighting creating strong shadows, blue-grey color palette.
-Style: cinematic, high quality, dramatic lighting, film grain.
+中近景，略低机位，人物位于画面左三分之一。
+人物：年轻维修工穿旧深色工装，双手紧握生锈扳手，眉头紧锁，额头有汗，表情坚定。
+环境：昏暗修理铺室内，背景有工具板、散落零件和旧工作台。
+光线气氛：头顶一盏冷白荧光灯形成强阴影，蓝灰色调，气氛紧张压抑。
+画质要求：电影感画面，高细节，清晰对焦，真实摄影质感，统一短剧画风。
+限制：不要文字、水印、logo、字幕、UI；不要额外未命名人物。
 ```

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -61,26 +62,29 @@ VIDEO_DEFAULT_RESOLUTION = "1024x576"
 VIDEO_DEFAULT_DURATION = 4
 VIDEO_DEFAULT_FPS = 24
 
+# 说话/口型动作线索（有台词的镜头追加到视频提示词）
+SPEAKING_CUE = "角色正在说话，嘴部自然开合，有轻微口型变化和自然表情，是对白镜头"
+
 
 def _build_storyboard_video_desc(sb: Storyboard, reference_mode: str = "single") -> str:
-    """Build video description text from storyboard info."""
+    """从分镜信息组装中文视频描述。"""
     parts = []
     if sb.shot_type:
-        parts.append(f"shot size: {sb.shot_type}")
+        parts.append(f"景别：{sb.shot_type}")
     if sb.angle:
-        parts.append(f"angle: {sb.angle}")
+        parts.append(f"机位角度：{sb.angle}")
     if sb.movement:
-        parts.append(f"camera movement: {sb.movement}")
+        parts.append(f"镜头运动：{sb.movement}")
     if sb.action:
-        parts.append(f"action: {sb.action}")
+        parts.append(f"动作：{sb.action}")
     if sb.atmosphere:
-        parts.append(f"atmosphere: {sb.atmosphere}")
+        parts.append(f"气氛：{sb.atmosphere}")
     if sb.image_prompt:
-        parts.append(f"visual reference: {sb.image_prompt}")
+        parts.append(f"视觉参考：{sb.image_prompt}")
 
-    desc = ", ".join(parts)
+    desc = "，".join(parts)
     if sb.dialogue:
-        desc += f". dialogue: {sb.dialogue}"
+        desc += f"。台词：{sb.dialogue}"
     return desc
 
 
@@ -96,7 +100,7 @@ async def generate_video_prompt(
     - multi_ref: 通用多参模式（含资产/分镜图引用 @图N）
     - first_last: 首尾帧模式（纯文本描述）
     - seedance2: 即梦2.0 结构化格式
-    - wan2: 万象2.6 叙事式英文
+    - wan2: 万象2.6 叙事式中文
     """
     desc = _build_storyboard_video_desc(sb)
     prompt = sb.video_prompt or sb.image_prompt or ""
@@ -114,47 +118,47 @@ async def generate_video_prompt(
 
 
 def _prompt_multi_ref(desc: str, prompt: str, dialogue: str | None) -> str:
-    p = f"[Instruction]\nBased on the storyboard reference:\n{desc}\n"
+    p = f"【生成指令】\n根据以下分镜参考生成视频：\n{desc}\n"
     if dialogue:
-        p += f"Dialogue: {dialogue}\n"
+        p += f"台词：{dialogue}\n"
     if prompt:
-        p += f"\nVisual style reference: {prompt}"
+        p += f"\n视觉风格参考：{prompt}"
     return p
 
 
 def _prompt_first_last(desc: str, prompt: str, dialogue: str | None) -> str:
     p = (
-        f"[Visual]\n{desc}\n{prompt}\n"
-        f"[Motion]\n0s-4s: Continuous natural movement, smooth camera.\n"
+        f"【画面】\n{desc}\n{prompt}\n"
+        f"【运动】\n0秒到4秒：连续自然运动，镜头平滑。\n"
     )
     if dialogue:
-        p += f"[Audio]\n{dialogue} (dialogue, lip-sync active)\n"
+        p += f"【声音】\n{dialogue}（对白，启用口型动作）\n"
     else:
-        p += "[Audio]\nNo dialogue. Ambient atmosphere.\n"
-    p += "[Camera]\nCinematic, single continuous take, no cuts.\n[Narrative]\nProgression as described."
+        p += "【声音】\n无对白，保留环境气氛。\n"
+    p += "【镜头】\n电影感，单镜头连续拍摄，不切镜。\n【叙事】\n按描述推进。"
     return p
 
 
 def _prompt_seedance2(desc: str, prompt: str, duration: int, dialogue: str | None) -> str:
     ms = max(duration * 1000, 1000)
-    p = f"Generate a video composed of the following 1 shot:\n\nShot 1<duration-ms>{ms}</duration-ms>: {desc}"
+    p = f"生成由以下1个镜头组成的视频：\n\n镜头1<duration-ms>{ms}</duration-ms>：{desc}"
     if dialogue:
-        p += f". Says: \"{dialogue}\""
+        p += f"。角色说：{dialogue}"
     else:
-        p += ". No dialogue."
+        p += "。无对白。"
     p += f". {prompt}"
     return p
 
 
 def _prompt_wan2(desc: str, prompt: str, dialogue: str | None) -> str:
     p = (
-        f"A cinematic scene.\n{desc}\n{prompt}\n"
-        "Captured in a continuous shot, static camera.\n"
+        f"电影感短剧镜头。\n{desc}\n{prompt}\n"
+        "连续单镜头拍摄，镜头稳定。\n"
     )
     if dialogue:
-        p += f'"{dialogue}" (dialogue).\n'
+        p += f"对白：{dialogue}\n"
     else:
-        p += "No dialogue.\n"
+        p += "无对白。\n"
     return p
 
 
@@ -175,7 +179,10 @@ async def submit_video_generation(
     if sb is None or sb.deleted_at is not None:
         raise LookupError("分镜不存在")
 
-    full_prompt = " ".join(p for p in [prompt or sb.video_prompt or sb.image_prompt or "", extra] if p)
+    base_prompt = prompt or sb.video_prompt or sb.image_prompt or ""
+    # 有台词的镜头追加「说话/口型」线索，让人物在画面里像在说话（即便还没接真口型模型）
+    speaking_cue = SPEAKING_CUE if (sb.dialogue or "").strip() else ""
+    full_prompt = " ".join(p for p in [base_prompt, speaking_cue, extra] if p)
 
     compliance = check(full_prompt)
     if compliance.blocked:
@@ -190,6 +197,10 @@ async def submit_video_generation(
     node = get_node(db, node_id)
     if not hasattr(node, "text2video"):
         raise VideoGenError("当前算力节点不支持视频生成（目前仅本地 ComfyUI）")
+    audio_driven = reference_mode == "audio_driven"
+    if audio_driven and not sb.tts_audio_url:
+        raise VideoGenError("当前片段还没有配音，请先绑定角色和音色并生成本片段配音")
+
     job = VideoJob(
         prompt=full_prompt,
         first_frame_url=sb.composed_image or sb.first_frame_image,
@@ -205,12 +216,15 @@ async def submit_video_generation(
     # 单图 → 视频：LTX i2v 工作流（提示词合规已在上方校验）。同步等待出片。
     result = await node.text2video(
         input_image=job.first_frame_url,
+        input_audio=sb.tts_audio_url if audio_driven else None,
         prompt=full_prompt,
         duration=duration,
         workflow="ltx23-i2v.api.json",
     )
     status = result.status
-    video_url = result.image_url
+    # 用本地已去音轨的 /oss 文件做播放地址（与图片素材一致），而不是 ComfyUI /view 原片——
+    # 后者带 LTX 模型幻觉音轨，会出现「语音和剧本对不上」。
+    video_url = ("/oss/" + Path(result.image_path).name) if result.image_path else result.image_url
     local_path = result.image_path
     error_msg = None if status == "completed" else (result.error or "视频生成失败")
 
@@ -219,7 +233,7 @@ async def submit_video_generation(
         drama_id=sb.episode_id,
         provider=node.type,
         prompt=full_prompt,
-        model=model,
+        model="LTX-2.3 audio-driven" if audio_driven else model,
         reference_mode=reference_mode,
         first_frame_url=job.first_frame_url,
         last_frame_url=job.last_frame_url,

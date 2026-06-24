@@ -12,6 +12,7 @@ class ImageJob:
     width: int = 768
     height: int = 1024
     steps: int | None = None
+    cfg: float | None = None
     seed: int | None = None
     workflow: str = "flux-t2i.api.json"
     reference_images: list[str] = field(default_factory=list)

@@ -6,30 +6,31 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.domain import Storyboard
+from app.models.domain import Storyboard, StoryboardCharacter
 from app.services.agents.script_agent import load_skill
 from app.services.llm.client import chat_text, resolve_llm
+from app.services.storyboard_references import sync_storyboard_characters
 
 _OUTPUT_SPEC = (
-    "\n\nBreak the user's script into a shot list. **Output JSON only**, format:"
+    "\n\n把用户剧本拆成分镜清单。所有提示词字段必须使用中文，不要输出英文提示词。**只输出 JSON**，格式："
     '{"storyboards":[{'
     '"storyboard_number":1,'
-    '"title":"3-5 character Chinese title",'
-    '"location":"location in Chinese",'
-    '"time":"time + lighting in Chinese",'
-    '"shot_type":"shot size (extreme long shot/long shot/medium shot/close-up/extreme close-up)",'
-    '"angle":"camera angle",'
-    '"movement":"camera movement",'
-    '"action":"who does what + expression in Chinese",'
-    '"dialogue":"dialogue in Chinese",'
-    '"result":"visual result",'
-    '"atmosphere":"lighting/color tone/mood",'
-    '"image_prompt":"English static image prompt for AI image generation (pure visual description, no real person names)",'
-    '"video_prompt":"video prompt segmented by 3-second intervals",'
-    '"bgm_prompt":"background music style",'
-    '"sound_effect":"key sound effects",'
+    '"title":"3到5个字的中文标题",'
+    '"location":"中文地点",'
+    '"time":"中文时间和光线",'
+    '"shot_type":"中文景别（远景/全景/中景/近景/特写/大特写）",'
+    '"angle":"中文机位角度",'
+    '"movement":"中文镜头运动",'
+    '"action":"谁做什么+表情动作，中文",'
+    '"dialogue":"中文台词",'
+    '"result":"中文画面结果",'
+    '"atmosphere":"中文光线/色调/气氛",'
+    '"image_prompt":"中文静态画面提示词，纯视觉描述，包含景别、构图、人物动作、环境、光线、气氛，不要真实人名",'
+    '"video_prompt":"中文视频提示词，按3秒分段描述动作推进和镜头变化",'
+    '"bgm_prompt":"中文配乐风格",'
+    '"sound_effect":"中文关键音效",'
     '"duration":12'
-    "}]}. duration should be an integer between 10-15. No explanation or prefix/suffix."
+    "}]}. duration 是 10 到 15 的整数。不要解释，不要前后缀。"
 )
 
 
@@ -67,6 +68,11 @@ def save_storyboards(db: Session, episode_id: int, shots: list[dict]) -> int:
     old = db.scalars(
         select(Storyboard).where(Storyboard.episode_id == episode_id, Storyboard.deleted_at.is_(None))
     ).all()
+    old_ids = [row.id for row in old]
+    if old_ids:
+        links = db.scalars(select(StoryboardCharacter).where(StoryboardCharacter.storyboard_id.in_(old_ids))).all()
+        for link in links:
+            db.delete(link)
     for row in old:
         db.delete(row)
 
@@ -74,8 +80,7 @@ def save_storyboards(db: Session, episode_id: int, shots: list[dict]) -> int:
     for index, shot in enumerate(shots, start=1):
         if not isinstance(shot, dict):
             continue
-        db.add(
-            Storyboard(
+        row = Storyboard(
                 episode_id=episode_id,
                 storyboard_number=_int(shot.get("storyboard_number"), index),
                 title=shot.get("title"),
@@ -95,22 +100,24 @@ def save_storyboards(db: Session, episode_id: int, shots: list[dict]) -> int:
                 duration=_int(shot.get("duration"), 12),
                 status="pending",
             )
-        )
+        db.add(row)
+        db.flush()
+        sync_storyboard_characters(db, row)
         count += 1
     db.commit()
     return count
 
 
 def polish_prompts(db: Session, shots: list[dict], temperature: float = 0.4) -> list[dict]:
-    """Use LLM to generate polished English image prompts for existing shot list."""
+    """用 LLM 为现有分镜生成中文画面提示词。"""
     base_url, api_key, model = resolve_llm(db)
     skill = load_skill("storyboard_breaker")
     prompt = (
-        "Below is shot data (JSON array). Generate a high-quality English image prompt (image_prompt) for each shot. "
-        "The prompt should include shot size, angle, camera movement, character action, expression, lighting and atmosphere, "
-        "suitable for direct use in AI image generation."
-        "\n\n**Output JSON only**, format: {\"prompts\":[{\"number\":shot_number,\"prompt\":\"image prompt\"}]}. No explanation."
-        f"\n\nShot data:\n{json.dumps(shots, ensure_ascii=False)}"
+        "下面是分镜数据（JSON 数组）。请为每个分镜生成高质量中文静态画面提示词 image_prompt。"
+        "提示词要包含景别、机位、构图、人物动作、表情、环境、光线和气氛，可直接用于 AI 出图。"
+        "必须输出中文，不要英文，不要中英混杂。"
+        "\n\n**只输出 JSON**，格式：{\"prompts\":[{\"number\":镜头编号,\"prompt\":\"中文画面提示词\"}]}。不要解释。"
+        f"\n\n分镜数据：\n{json.dumps(shots, ensure_ascii=False)}"
     )
     messages = [
         {"role": "system", "content": skill},
@@ -127,5 +134,5 @@ def polish_prompts(db: Session, shots: list[dict], temperature: float = 0.4) -> 
     data = json.loads(raw)
     prompts = data.get("prompts") or []
     if not isinstance(prompts, list):
-        raise ValueError("Polished prompts result is not a list")
+        raise ValueError("润色提示词结果不是列表")
     return prompts

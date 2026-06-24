@@ -19,6 +19,7 @@ import BatchBar from "../components/BatchBar";
 import AssetGenerationControls from "../components/AssetGenerationControls";
 import AssetHistoryStrip from "../components/AssetHistoryStrip";
 import AdditionalInstructionField from "../components/AdditionalInstructionField";
+import ImageLightbox from "../components/ImageLightbox";
 import { useBatchRun, type BatchOutcome } from "../components/useBatchRun";
 import { useSelection } from "../components/useSelection";
 
@@ -46,6 +47,7 @@ export default function PropAssetsView({
   const [prompts, setPrompts] = useState<Record<number, string>>({});
   const [notice, setNotice] = useState("");
   const [extra, setExtra] = useState("");
+  const [preview, setPreview] = useState<string | null>(null);
   const sel = useSelection();
   const batch = useBatchRun();
 
@@ -225,7 +227,7 @@ export default function PropAssetsView({
                   <label style={{ position: "absolute", left: 6, top: 6, zIndex: 2, display: "flex", cursor: "pointer", background: "var(--bg)", borderRadius: 4, padding: 3, lineHeight: 0 }} title="选择此道具（用于批量生成）">
                     <input type="checkbox" checked={picked} onChange={() => sel.toggle(prop.id)} disabled={batch.running} />
                   </label>
-                  {prop.image_url ? <img src={prop.image_url} alt={prop.name} /> : <Image size={30} />}
+                  {prop.image_url ? <img src={prop.image_url} alt={prop.name} onClick={() => setPreview(prop.image_url)} style={{ cursor: "zoom-in" }} title="点击放大预览" /> : <Image size={30} />}
                   {generating === prop.id && <span style={{ position: "absolute", right: 6, top: 6, zIndex: 2, color: "var(--green-t)" }}><LoaderCircle className="spin" size={16} /></span>}
                 </div>
                 <AssetHistoryStrip
@@ -275,6 +277,7 @@ export default function PropAssetsView({
           {!props.length && <div className="empty-state"><Package size={24} /> 当前项目暂无道具。点右上「AI 提取道具」，从分集剧本自动提取。</div>}
         </div>
       </div>
+      <ImageLightbox src={preview} onClose={() => setPreview(null)} />
     </div>
   );
 }

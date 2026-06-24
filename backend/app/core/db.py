@@ -31,6 +31,7 @@ def _ensure_columns() -> None:
         return
     required: dict[str, list[tuple[str, str]]] = {
         "art_styles": [("constraint_manual", "TEXT")],
+        "storyboards": [("speaking_character_id", "INTEGER")],
     }
     with engine.begin() as conn:
         for table, cols in required.items():

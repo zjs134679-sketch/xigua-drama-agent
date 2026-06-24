@@ -3,20 +3,19 @@
 ## 模板结构
 
 ```
-A cinematic [style] pure background scene depicting [location] at [time].
-The scene shows [environment details, architecture, objects, lighting].
-No characters, no people, no figures.
-Style: [art style], rich details, high quality, atmospheric lighting.
-Mood: [mood description].
+西瓜短剧写实场景设定图，[地点]，[时间]，[天气/季节]。
+画面内容：[建筑结构]、[空间布局]、[关键陈设/物体]、[地面/墙面/门窗]。
+光线气氛：[主光源]、[色温]、[阴影]、[空气质感]。
+用途限制：纯背景环境图，不要人物、不要人群、不要人体轮廓、不要文字、水印和 logo。
+风格：电影感构图，高细节，清晰对焦，真实摄影质感，统一短剧画风。
 ```
 
 ## 示例
 
 ```
-A cinematic anime-style pure background scene depicting a traditional Japanese courtyard at dusk.
-The scene shows wooden corridors surrounding a zen garden with raked white gravel,
-a single cherry blossom tree with petals falling, stone lanterns casting warm light,
-sliding shoji doors partially open. No characters.
-Style: ghibli, rich details, high quality, warm golden hour lighting.
-Mood: peaceful, nostalgic, serene.
+西瓜短剧写实场景设定图，老旧邮局室内，清晨。
+画面内容：木质柜台、分类信件架、泛黄墙面、老式挂钟、窗边落入柔和晨光，桌面有整齐信封和旧账本。
+光线气氛：暖色晨光从左侧窗户进入，室内有轻微灰尘颗粒，阴影柔和，气氛安静怀旧。
+用途限制：纯背景环境图，不要人物、不要人群、不要人体轮廓、不要文字、水印和 logo。
+风格：电影感构图，高细节，清晰对焦，真实摄影质感，统一短剧画风。
 ```

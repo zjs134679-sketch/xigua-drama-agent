@@ -19,6 +19,7 @@ import BatchBar from "../components/BatchBar";
 import AssetGenerationControls from "../components/AssetGenerationControls";
 import AssetHistoryStrip from "../components/AssetHistoryStrip";
 import AdditionalInstructionField from "../components/AdditionalInstructionField";
+import ImageLightbox from "../components/ImageLightbox";
 import { useBatchRun, type BatchOutcome } from "../components/useBatchRun";
 import { useSelection } from "../components/useSelection";
 
@@ -46,6 +47,7 @@ export default function SceneAssetsView({
   const [prompts, setPrompts] = useState<Record<number, string>>({});
   const [notice, setNotice] = useState("");
   const [extra, setExtra] = useState("");
+  const [preview, setPreview] = useState<string | null>(null);
   const sel = useSelection();
   const batch = useBatchRun();
 
@@ -229,7 +231,7 @@ export default function SceneAssetsView({
                 >
                   <input type="checkbox" checked={picked} onChange={() => sel.toggle(scene.id)} disabled={batch.running} />
                 </label>
-                {scene.image_url ? <img src={scene.image_url} alt={scene.location ?? ""} /> : <Image size={30} />}
+                {scene.image_url ? <img src={scene.image_url} alt={scene.location ?? ""} onClick={() => setPreview(scene.image_url)} style={{ cursor: "zoom-in" }} title="点击放大预览" /> : <Image size={30} />}
                 {generating === scene.id && (
                   <span style={{ position: "absolute", right: 6, top: 6, zIndex: 2, color: "var(--green-t)" }}><LoaderCircle className="spin" size={16} /></span>
                 )}
@@ -287,6 +289,7 @@ export default function SceneAssetsView({
           {!scenes.length && <div className="empty-state"><Mountain size={24} /> 当前项目暂无场景。点右上「AI 提取角色/场景」，从分集剧本自动提取。</div>}
         </div>
       </div>
+      <ImageLightbox src={preview} onClose={() => setPreview(null)} />
     </div>
   );
 }

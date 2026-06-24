@@ -230,6 +230,10 @@ export interface ComputeNodeRecord {
   token_configured: boolean;
   api_key_configured: boolean;
   api_key_masked: string | null;
+  model_settings: Record<string, unknown>;
+  adapter_filename: string | null;
+  adapter_configured: boolean;
+  adapter_code: string;
 }
 
 export interface ComputeNodeInput {
@@ -243,6 +247,9 @@ export interface ComputeNodeInput {
   priority: number;
   is_active: boolean;
   capabilities?: string;
+  model_settings?: Record<string, unknown>;
+  adapter_code?: string;
+  adapter_filename?: string;
 }
 
 export interface ComputeNodeTestResult {
@@ -409,6 +416,14 @@ export function listVoices(): Promise<VoiceRecord[]> {
   return jsonRequest("/voices");
 }
 
+export function previewVoice(voiceId: string, text?: string): Promise<{ audio_url: string }> {
+  return jsonRequest("/voices/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id: voiceId, text }),
+  });
+}
+
 export function updateCharacterVoice(
   characterId: number,
   voiceId: string,
@@ -559,6 +574,16 @@ export function createDrama(body: DramaInput): Promise<Project> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export function deleteDrama(projectId: number): Promise<{
+  deleted: boolean;
+  project_id: number;
+  files_deleted: number;
+  files_skipped: number;
+  file_errors: string[];
+}> {
+  return jsonRequest(`/projects/${projectId}`, { method: "DELETE" });
 }
 
 export function listEpisodes(projectId: number): Promise<EpisodeSummary[]> {
@@ -793,6 +818,17 @@ export async function exportTimeline(episodeId: number): Promise<TimelineExportR
   return data as TimelineExportResult;
 }
 
+export function generateStoryboardTTS(
+  storyboardId: number,
+  username?: string,
+): Promise<{ storyboard_id: number; status: string; audio_url: string }> {
+  return jsonRequest(`/timeline/storyboards/${storyboardId}/tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username }),
+  });
+}
+
 // ===== 分镜 =====
 export interface Storyboard {
   id: number;
@@ -805,12 +841,28 @@ export interface Storyboard {
   angle: string | null;
   movement: string | null;
   action: string | null;
+  result: string | null;
   dialogue: string | null;
   atmosphere: string | null;
   image_prompt: string | null;
+  video_prompt: string | null;
+  bgm_prompt: string | null;
+  sound_effect: string | null;
+  description: string | null;
   duration: number;
+  speaking_character_id: number | null;
   image_url: string | null;
   status: string;
+  reference_mode: "auto" | "manual";
+  reference_images: StoryboardReference[];
+}
+
+export interface StoryboardReference {
+  url: string;
+  preview_url: string;
+  kind: "scene" | "continuity" | "previous" | "character" | "manual";
+  label: string;
+  source_storyboard_id: number | null;
 }
 
 export interface StoryboardGenResult {
@@ -838,6 +890,75 @@ export function listStoryboards(episodeId: number): Promise<Storyboard[]> {
   return jsonRequest(`/storyboard?episode_id=${episodeId}`);
 }
 
+export type ReviewSeverity = "severe" | "medium" | "minor";
+
+export interface StoryboardReviewIssue {
+  id: number;
+  severity: ReviewSeverity;
+  category: string;
+  storyboard_numbers: number[];
+  problem: string;
+  suggestion: string;
+}
+
+export interface StoryboardReviewReport {
+  id: number;
+  episode_id: number;
+  grade: "A" | "B" | "C" | "D";
+  summary: string;
+  counts: Record<ReviewSeverity, number>;
+  issues: StoryboardReviewIssue[];
+  decisions: string[];
+  model: string | null;
+  instruction: string | null;
+  created_at: string | null;
+  remediation?: {
+    applied_at: string;
+    model: string;
+    instruction: string | null;
+    summary: string;
+    changes: StoryboardRemediationChange[];
+  };
+}
+
+export interface StoryboardRemediationChange {
+  storyboard_id: number;
+  storyboard_number: number;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+}
+
+export function getLatestStoryboardReview(episodeId: number): Promise<StoryboardReviewReport | null> {
+  return jsonRequest(`/storyboard-review/latest?episode_id=${episodeId}`);
+}
+
+export function listStoryboardReviews(episodeId: number): Promise<StoryboardReviewReport[]> {
+  return jsonRequest(`/storyboard-review?episode_id=${episodeId}`);
+}
+
+export function runStoryboardReview(body: {
+  episode_id: number;
+  username?: string;
+  instruction?: string;
+}): Promise<StoryboardReviewReport> {
+  return jsonRequest("/storyboard-review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function remediateStoryboardReview(
+  reviewId: number,
+  body: { username?: string; instruction?: string },
+): Promise<{ review: StoryboardReviewReport; changed_count: number; changes: StoryboardRemediationChange[] }> {
+  return jsonRequest(`/storyboard-review/${reviewId}/remediate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function generateStoryboards(episodeId: number, username = "local"): Promise<StoryboardGenResult> {
   const r = await apiFetch("/storyboard/generate", {
     method: "POST",
@@ -853,12 +974,22 @@ export async function generateStoryboards(episodeId: number, username = "local")
   return { status: r.status, message: typeof detail === "string" ? detail : "分镜生成失败" };
 }
 
-export function updateStoryboardPrompt(storyboardId: number, imagePrompt: string): Promise<Storyboard> {
+export type StoryboardUpdate = Partial<Pick<Storyboard,
+  "title" | "location" | "time" | "shot_type" | "angle" | "movement" | "action" | "result" |
+  "atmosphere" | "image_prompt" | "video_prompt" | "bgm_prompt" | "sound_effect" | "dialogue" |
+  "description" | "duration" | "speaking_character_id"
+>> & { reference_images?: string[] | null };
+
+export function updateStoryboard(storyboardId: number, changes: StoryboardUpdate): Promise<Storyboard> {
   return jsonRequest(`/storyboard/${storyboardId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image_prompt: imagePrompt }),
+    body: JSON.stringify(changes),
   });
+}
+
+export function updateStoryboardPrompt(storyboardId: number, imagePrompt: string): Promise<Storyboard> {
+  return updateStoryboard(storyboardId, { image_prompt: imagePrompt });
 }
 
 export interface BatchStoryboardImageResult {

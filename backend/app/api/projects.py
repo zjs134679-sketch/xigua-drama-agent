@@ -19,6 +19,7 @@ from app.schemas.project import (
 from app.services.asset_generation import build_character_prompt
 from app.services.compliance import check, enforce
 from app.services.novel_split import split_novel
+from app.services.project_deletion import delete_project
 from app.services.voice_assignment import assign_character_voices
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -72,6 +73,15 @@ def get_drama(drama_id: int, db: Session = Depends(get_db)) -> dict:
     if not d or d.deleted_at is not None:
         raise HTTPException(404, "项目不存在")
     return drama_view(d)
+
+
+@router.delete("/{drama_id}")
+def remove_drama(drama_id: int, db: Session = Depends(get_db)) -> dict:
+    """Permanently delete a project, its related records, and unshared local files."""
+    try:
+        return delete_project(db, drama_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.post("/{drama_id}/episodes")

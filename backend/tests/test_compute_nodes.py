@@ -125,6 +125,69 @@ def test_remote_reference_image_uses_authenticated_multipart(tmp_path):
     assert asyncio.run(upload()) == ["uploaded-reference.png"]
 
 
+def test_local_reference_resolves_oss_api_path(monkeypatch, tmp_path):
+    oss = tmp_path / "oss"
+    oss.mkdir()
+    source = oss / "storyboard.png"
+    source.write_bytes(b"storyboard-image")
+    monkeypatch.setattr("app.services.compute.local_comfy.settings.data_dir", tmp_path)
+
+    async def read_reference():
+        node = LocalComfyNode()
+        async with httpx.AsyncClient() as client:
+            return await node._read_reference(client, "/oss/storyboard.png")
+
+    filename, content, mime = asyncio.run(read_reference())
+
+    assert filename == "storyboard.png"
+    assert content == b"storyboard-image"
+    assert mime == "image/png"
+
+
+def test_kontext_workflow_expands_and_shrinks_reference_chain():
+    node = LocalComfyNode()
+
+    expanded = node._inject(
+        node._load_workflow("kontext-multiref.api.json"),
+        ImageJob(prompt="三参考", reference_images=["scene.png", "a.png", "b.png"]),
+    )
+    expanded_loads = [item for item in expanded.values() if item.get("class_type") == "LoadImage"]
+    method = next(item for item in expanded.values() if item.get("class_type") == "FluxKontextMultiReferenceLatentMethod")
+    assert [item["inputs"]["image"] for item in expanded_loads] == ["scene.png", "a.png", "b.png"]
+    assert method["inputs"]["reference_latents_method"] == "index"
+    assert "method" not in method["inputs"]
+    assert expanded[method["inputs"]["conditioning"][0]]["class_type"] == "ReferenceLatent"
+
+    single = node._inject(
+        node._load_workflow("kontext-multiref.api.json"),
+        ImageJob(prompt="单参考", reference_images=["character.png"]),
+    )
+    single_loads = [item for item in single.values() if item.get("class_type") == "LoadImage"]
+    assert [item["inputs"]["image"] for item in single_loads] == ["character.png"]
+
+
+def test_ltx_video_injection_replaces_empty_audio_with_fixed_tts_latent():
+    node = LocalComfyNode()
+    workflow = node._load_workflow("ltx23-i2v.api.json")
+
+    injected = node._inject_video(
+        workflow,
+        image_name="shot.png",
+        audio_name="dialogue.mp3",
+        prompt="single speaker talking",
+        duration=4,
+        seed=123,
+    )
+
+    assert injected["201"]["class_type"] == "LoadAudio"
+    assert injected["201"]["inputs"]["audio"] == "dialogue.mp3"
+    assert injected["202"]["inputs"]["duration"] == 4.0
+    assert injected["203"]["class_type"] == "LTXVAudioVAEEncode"
+    assert injected["204"]["inputs"]["value"] == 0.0
+    assert injected["205"]["class_type"] == "SetLatentNoiseMask"
+    assert injected["20"]["inputs"]["audio_latent"] == ["205", 0]
+
+
 def test_node_payload_never_returns_credentials():
     row = ComputeNodeRow(
         id=1,
