@@ -8,3 +8,5 @@ python-multipart>=0.0.18
 edge-tts>=7.0
 pypinyin>=0.53
 pytest>=8.3
+
+pyjwt>=2.9

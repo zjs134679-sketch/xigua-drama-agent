@@ -10,6 +10,7 @@ from app.models.domain import Episode
 from app.schemas.project import ScriptDraftRequest, ScriptGenerateRequest
 from app.services.agents.script_agent import generate_script
 from app.services.compliance import FilterResult, check, enforce
+from app.services.license_gate import require_valid_license
 from app.services.llm.client import LLMNotConfigured
 
 router = APIRouter(prefix="/script", tags=["script"])
@@ -46,7 +47,11 @@ def _block(
 
 
 @router.post("/generate")
-def script_generate(req: ScriptGenerateRequest, db: Session = Depends(get_db)) -> dict:
+def script_generate(
+    req: ScriptGenerateRequest,
+    db: Session = Depends(get_db),
+    _license: dict = Depends(require_valid_license),
+) -> dict:
     ensure_active_user(db, req.username)
     ep = db.get(Episode, req.episode_id)
     if not ep:
@@ -60,11 +65,19 @@ def script_generate(req: ScriptGenerateRequest, db: Session = Depends(get_db)) -
         _block(db, req.username, input_result, "script_input", "原文触发红线，已拦截并记录")
 
     try:
-        script = generate_script(db, ep.content, req.temperature)
+        script = generate_script(db, ep.content, req.temperature, episode_id=ep.id)
     except LLMNotConfigured as e:
         raise HTTPException(400, str(e))
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code in (401, 403):
+            raise HTTPException(
+                502,
+                f"LLM 鉴权失败（HTTP {code}）：API Key 无效或已过期，请到「设置 → 语言模型」更新并测试连接",
+            ) from e
+        raise HTTPException(502, f"LLM 调用失败: HTTP {code}") from e
     except httpx.HTTPError as e:
-        raise HTTPException(502, f"LLM 调用失败: {e}")
+        raise HTTPException(502, f"LLM 调用失败: {e}") from e
 
     output_result = check(script)
     if output_result.blocked:

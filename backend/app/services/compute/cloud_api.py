@@ -112,6 +112,41 @@ class WanAdapter(ProviderAdapter):
         raise ValueError("WAN 任务成功但未返回图片地址")
 
 
+def _file_to_data_url(path: Path) -> str:
+    import base64
+    import mimetypes
+
+    mime = mimetypes.guess_type(str(path))[0] or "image/png"
+    raw = path.read_bytes()
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
+def resolve_cloud_image_ref(source: str, oss_dir: Path | None = None) -> str:
+    """本地 /oss 图 → data URL；已是 http(s)/data 则原样。供云图生视频使用。"""
+    text = (source or "").strip()
+    if not text:
+        raise ValueError("参考图地址为空")
+    if text.startswith("data:") or urlparse(text).scheme in {"http", "https"}:
+        return text
+    name = Path(text).name
+    candidates: list[Path] = []
+    if text.startswith("/oss/") and oss_dir is not None:
+        candidates.append(oss_dir / name)
+    p = Path(text)
+    if p.is_file():
+        candidates.append(p)
+    if oss_dir is not None:
+        candidates.append(oss_dir / name)
+    for cand in candidates:
+        try:
+            if cand.is_file() and cand.stat().st_size > 0:
+                return _file_to_data_url(cand)
+        except OSError:
+            continue
+    raise ValueError(f"无法读取本地参考图: {text[:120]}")
+
+
 class SeedanceAdapter(ProviderAdapter):
     name = "seedance"
     default_base_url = "https://ark.cn-beijing.volces.com"
@@ -126,15 +161,21 @@ class SeedanceAdapter(ProviderAdapter):
 
     def build_request(self, model: str, job: ImageJob) -> RequestSpec:
         content: list[dict] = [{"type": "text", "text": job.prompt}]
-        for source in job.reference_images:
-            if urlparse(source).scheme not in {"http", "https"}:
-                raise ValueError("Seedance 参考图必须是可访问的 HTTP(S) URL")
+        for source in job.reference_images or []:
+            if not source:
+                continue
             content.append({"type": "image_url", "image_url": {"url": source}})
+        duration = 5
+        if job.duration is not None:
+            try:
+                duration = max(2, min(int(job.duration), 10))
+            except (TypeError, ValueError):
+                duration = 5
         body: dict[str, object] = {
             "model": model,
             "content": content,
             "ratio": self._ratio(job),
-            "duration": 5,
+            "duration": duration,
             "watermark": False,
         }
         if job.seed is not None:
@@ -264,7 +305,7 @@ class CloudApiNode(ComputeNode):
         path.write_bytes(response.content)
         return path
 
-    async def text2image(self, job: ImageJob) -> JobResult:
+    async def _run_async_job(self, job: ImageJob) -> JobResult:
         if self.adapter is None:
             return JobResult("failed", error=f"不支持的云 provider: {self.provider or '未配置'}")
         if not (self.api_key or self.token):
@@ -318,3 +359,48 @@ class CloudApiNode(ComputeNode):
         except Exception as exc:  # noqa: BLE001
             logger.exception("云 API 未预期错误 provider=%s", self.provider)
             return JobResult("failed", error=f"{self.provider} 云节点异常: {type(exc).__name__}: {exc}")
+
+    async def text2image(self, job: ImageJob) -> JobResult:
+        if self.adapter is not None and self.adapter.media_type == "video":
+            return JobResult(
+                "failed",
+                error=f"{self.provider} 是视频模型，不能出静帧图。请配置通义万相（wan）作出图节点",
+            )
+        return await self._run_async_job(job)
+
+    async def text2video(
+        self,
+        *,
+        input_image: str,
+        prompt: str | None,
+        duration: int | None = None,
+        workflow: str = "",
+        seed: int | None = None,
+        input_audio: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        negative: str | None = None,
+    ) -> JobResult:
+        """云图生视频（当前支持 Seedance）。本地首帧会转 data URL，无需公网图床。"""
+        _ = workflow, input_audio, negative  # 云路径不走 Comfy 工作流 / 口型
+        if self.adapter is None:
+            return JobResult("failed", error=f"不支持的云 provider: {self.provider or '未配置'}")
+        if self.adapter.media_type != "video":
+            return JobResult(
+                "failed",
+                error=f"{self.provider} 不能出视频。请配置豆包 Seedance 作出片节点，或使用本地 ComfyUI",
+            )
+        try:
+            ref = resolve_cloud_image_ref(input_image, settings.data_dir / "oss")
+        except ValueError as exc:
+            return JobResult("failed", error=str(exc))
+        sec = max(2, min(int(duration or 5), 10))
+        job = ImageJob(
+            prompt=(prompt or "cinematic motion, smooth camera").strip(),
+            width=int(width or 720),
+            height=int(height or 1280),
+            seed=seed,
+            reference_images=[ref],
+            duration=sec,
+        )
+        return await self._run_async_job(job)

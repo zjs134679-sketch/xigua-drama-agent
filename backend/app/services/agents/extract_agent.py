@@ -1,4 +1,4 @@
-"""提取 Agent —— 用 extractor skill 从剧本/原文抽取 角色 / 场景 / 道具（JSON），按名去重入库。"""
+"""提取 Agent —— 用 xg_cast_extract skill 从剧本/原文抽取 角色 / 场景 / 道具（JSON），按名去重入库。"""
 from __future__ import annotations
 
 import json
@@ -6,12 +6,14 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.domain import Character, EpisodeCharacter, EpisodeScene, Prop, Scene
+from app.models.domain import Character, Drama, Episode, EpisodeCharacter, EpisodeScene, Prop, Scene
 from app.services.agents.script_agent import load_skill
+from app.services.asset_generation import scrub_people_from_prompt
 from app.services.llm.client import chat_text, resolve_llm
 
 _INSTRUCTION = """
 阅读下面的剧本/小说内容，提取文本中真实出现的【角色】【场景】【道具】。
+场景 prompt 必须是纯环境空镜描述（建筑/陈设/光线/天气），严禁写入任何人物姓名、士兵、站位或动作。
 严格输出一个 JSON 对象（不要解释，不要 Markdown 代码块），结构如下：
 {
   "characters": [{"name":"中文角色名","role":"主角/配角/龙套","appearance":"中文外貌描述","personality":"中文性格标签","description":"中文背景和人物关系"}],
@@ -38,11 +40,27 @@ def _parse_json(raw: str) -> dict:
         raise
 
 
-def extract(db: Session, content: str, temperature: float = 0.3) -> dict:
+def extract(
+    db: Session,
+    content: str,
+    temperature: float = 0.3,
+    *,
+    drama_id: int | None = None,
+) -> dict:
     base_url, api_key, model = resolve_llm(db)
-    skill = load_skill("extractor")
+    skill = load_skill("xg_cast_extract")
+    style_note = ""
+    try:
+        from app.services.style_composer import compose
+        from app.services.style_contract import STAGE_CAST
+
+        drama = db.get(Drama, drama_id) if drama_id is not None else None
+        contract = compose(db=db, drama=drama, stage=STAGE_CAST)
+        style_note = "\n\n" + contract.system_prefix()
+    except Exception:  # noqa: BLE001
+        style_note = ""
     messages = [
-        {"role": "system", "content": skill + "\n\n" + _INSTRUCTION},
+        {"role": "system", "content": skill + "\n\n" + _INSTRUCTION + style_note},
         {"role": "user", "content": content},
     ]
     raw = chat_text(messages, base_url, api_key, model, temperature=temperature, response_format={"type": "json_object"})
@@ -63,6 +81,7 @@ def save_extracted(db: Session, drama_id: int, episode_id: int | None, extracted
             continue
         row = db.scalars(select(Character).where(Character.drama_id == drama_id, Character.name == name)).first()
         if row is None:
+            appearance = (c.get("appearance") or "").strip()
             row = Character(
                 drama_id=drama_id,
                 name=name,
@@ -70,6 +89,8 @@ def save_extracted(db: Session, drama_id: int, episode_id: int | None, extracted
                 appearance=c.get("appearance"),
                 personality=c.get("personality"),
                 description=c.get("description"),
+                # 预填可编辑提示词，减少角色页空白
+                image_prompt=appearance or None,
             )
             db.add(row)
             db.flush()
@@ -88,6 +109,12 @@ def save_extracted(db: Session, drama_id: int, episode_id: int | None, extracted
         time = (s.get("time") or "").strip() or "未知"
         if not location:
             continue
+        # 入库前强制清人物诱导词，避免场景页带着脏 prompt
+        raw_prompt = (s.get("prompt") or "").strip()
+        cleaned = scrub_people_from_prompt(raw_prompt)
+        if not cleaned or len(cleaned) < 6:
+            atm = (s.get("atmosphere") or "").strip()
+            cleaned = "，".join(x for x in (location, time, atm) if x)
         row = db.scalars(
             select(Scene).where(Scene.drama_id == drama_id, Scene.location == location, Scene.time == time)
         ).first()
@@ -97,12 +124,16 @@ def save_extracted(db: Session, drama_id: int, episode_id: int | None, extracted
                 episode_id=episode_id,
                 location=location,
                 time=time,
-                prompt=s.get("prompt") or "",
+                prompt=cleaned,
                 status="pending",
             )
             db.add(row)
             db.flush()
             new["scenes"] += 1
+        else:
+            # 已有行若 prompt 很脏，补一次清洗
+            if row.prompt and scrub_people_from_prompt(row.prompt) != row.prompt:
+                row.prompt = scrub_people_from_prompt(row.prompt) or cleaned
         if episode_id:
             linked = db.scalars(
                 select(EpisodeScene).where(EpisodeScene.episode_id == episode_id, EpisodeScene.scene_id == row.id)

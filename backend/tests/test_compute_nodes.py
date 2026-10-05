@@ -144,48 +144,65 @@ def test_local_reference_resolves_oss_api_path(monkeypatch, tmp_path):
     assert mime == "image/png"
 
 
-def test_kontext_workflow_expands_and_shrinks_reference_chain():
+def test_h3_turbo_t2i_inject_forces_non_pruned_and_4_steps():
     node = LocalComfyNode()
-
-    expanded = node._inject(
-        node._load_workflow("kontext-multiref.api.json"),
-        ImageJob(prompt="三参考", reference_images=["scene.png", "a.png", "b.png"]),
+    wf = node._load_workflow("minimax-h3-t2i.api.json")
+    injected = node._inject(
+        wf,
+        ImageJob(
+            prompt="角色定妆",
+            width=768,
+            height=1344,
+            steps=32,
+            reference_images=[],
+        ),
+        model_settings={"unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors"},
     )
-    expanded_loads = [item for item in expanded.values() if item.get("class_type") == "LoadImage"]
-    method = next(item for item in expanded.values() if item.get("class_type") == "FluxKontextMultiReferenceLatentMethod")
-    assert [item["inputs"]["image"] for item in expanded_loads] == ["scene.png", "a.png", "b.png"]
-    assert method["inputs"]["reference_latents_method"] == "index"
-    assert "method" not in method["inputs"]
-    assert expanded[method["inputs"]["conditioning"][0]]["class_type"] == "ReferenceLatent"
-
-    single = node._inject(
-        node._load_workflow("kontext-multiref.api.json"),
-        ImageJob(prompt="单参考", reference_images=["character.png"]),
-    )
-    single_loads = [item for item in single.values() if item.get("class_type") == "LoadImage"]
-    assert [item["inputs"]["image"] for item in single_loads] == ["character.png"]
+    unet = next(n for n in injected.values() if n.get("class_type") == "UNETLoader")
+    assert "pruned" not in unet["inputs"]["unet_name"].lower()
+    dual = next(n for n in injected.values() if n.get("class_type") == "MiniMaxH3DualClockSamplerT8")
+    assert dual["inputs"]["steps"] == 4
+    cond = next(n for n in injected.values() if n.get("class_type") == "MiniMaxH3AudioConditioningT8")
+    assert cond["inputs"]["prompt"] == "角色定妆"
 
 
-def test_ltx_video_injection_replaces_empty_audio_with_fixed_tts_latent():
+def test_h3_turbo_r2v_inject_refs_and_ref2va():
     node = LocalComfyNode()
-    workflow = node._load_workflow("ltx23-i2v.api.json")
-
+    workflow = node._load_workflow("minimax-h3-r2v.api.json")
     injected = node._inject_video(
         workflow,
-        image_name="shot.png",
-        audio_name="dialogue.mp3",
-        prompt="single speaker talking",
-        duration=4,
+        image_name="char.png",
+        prompt="Use <Picture 1>. natural speech",
+        duration=3,
         seed=123,
+        reference_image_names=["char.png", "scene.png"],
+        width=768,
+        height=432,
     )
+    cond = next(
+        n for n in injected.values() if n.get("class_type") == "MiniMaxH3AudioConditioningT8"
+    )
+    assert cond["inputs"]["task_type"] == "Ref2VA"
+    assert cond["inputs"]["ref_images.ref_image_0"] == ["101", 0] or str(
+        cond["inputs"].get("ref_images.ref_image_0")
+    )
+    assert "char.png" in str(injected)
+    dual = next(n for n in injected.values() if n.get("class_type") == "MiniMaxH3DualClockSamplerT8")
+    assert dual["inputs"]["steps"] == 4
 
-    assert injected["201"]["class_type"] == "LoadAudio"
-    assert injected["201"]["inputs"]["audio"] == "dialogue.mp3"
-    assert injected["202"]["inputs"]["duration"] == 4.0
-    assert injected["203"]["class_type"] == "LTXVAudioVAEEncode"
-    assert injected["204"]["inputs"]["value"] == 0.0
-    assert injected["205"]["class_type"] == "SetLatentNoiseMask"
-    assert injected["20"]["inputs"]["audio_latent"] == ["205", 0]
+
+def test_strip_audio_skips_non_video_suffix(tmp_path: Path):
+    node = LocalComfyNode()
+    png = tmp_path / "frame.png"
+    png.write_bytes(b"not-a-video")
+    assert node._strip_audio(png) == png
+
+
+def test_legacy_workflow_name_maps_to_turbo():
+    assert LocalComfyNode._canonical_workflow("flux-t2i.api.json", kind="image") == "minimax-h3-t2i.api.json"
+    assert LocalComfyNode._canonical_workflow("kontext-multiref.api.json", kind="image") == "minimax-h3-t2i.api.json"
+    assert LocalComfyNode._canonical_workflow("ltx23-i2v.api.json", kind="video") == "minimax-h3-r2v.api.json"
+    assert LocalComfyNode._canonical_workflow("minimax-h3-i2v.api.json", kind="video") == "minimax-h3-r2v.api.json"
 
 
 def test_node_payload_never_returns_credentials():

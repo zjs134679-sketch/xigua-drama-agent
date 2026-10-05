@@ -1,9 +1,28 @@
-"""合规过滤单测 —— 全部使用占位/演示词，不含任何真实敏感词。
+from __future__ import annotations
 
-红黄线机制（字面 / 夹符 / 谐音 / 红优先于黄）用占位词验证；
-真实词库由云端加密下发，不进仓库、不进测试。
-"""
+import pytest
+
+from app.core.config import settings
 from app.services.compliance import check
+from app.services.compliance.dictionary import dictionary
+
+
+@pytest.fixture(autouse=True)
+def _use_repo_placeholder_dict(monkeypatch: pytest.MonkeyPatch):
+    """强制使用仓库占位词库：本机若存在云端下发的 *.local.txt 会遮蔽演示词，
+    导致占位词单测失败。这里忽略 .local，测完恢复。"""
+    real_resolve = dictionary._resolve
+
+    def resolve_base_only(base: str):
+        return settings.dict_dir / f"{base}.txt"
+
+    monkeypatch.setattr(dictionary, "_resolve", resolve_base_only)
+    was_loaded = dictionary.loaded
+    dictionary.reload()
+    yield
+    monkeypatch.setattr(dictionary, "_resolve", real_resolve)
+    if was_loaded:
+        dictionary.reload()
 
 
 def test_pass_clean_prompt():

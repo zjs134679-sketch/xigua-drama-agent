@@ -16,7 +16,9 @@ import {
 import {
   createComputeNode,
   deleteComputeNode,
+  exportComfyWorkflows,
   listComputeNodes,
+  syncComfyParams,
   testComputeNode,
   updateComputeNode,
   type ComputeNodeInput,
@@ -57,6 +59,7 @@ interface ModelSettingsDraft {
   workflow: string;
   workflow_t2i: string;
   workflow_refs: string;
+  workflow_i2v: string;
   modes: string[];
 }
 
@@ -75,28 +78,30 @@ interface NodeForm {
   adapterFilename: string;
 }
 
+/** 当前产品默认：仅 H3 Turbo Stable 4V4A（文生图 + 多参考视频） */
 const DEFAULT_MODEL_SETTINGS: ModelSettingsDraft = {
   width: "768",
-  height: "432",
-  steps: "6",
+  height: "1344",
+  steps: "4",
   cfg: "1",
   model: "",
   ckpt_name: "",
-  unet_name: "",
+  unet_name: "minimax_h3_fl2va_int8_convrot.safetensors",
   clip1: "",
   clip2: "",
-  clip_name: "",
-  clip_type: "",
-  vae_name: "",
-  weight_dtype: "",
-  workflow: "",
-  workflow_t2i: "",
-  workflow_refs: "",
-  modes: ["image", "t2i", "i2i", "multiref"],
+  clip_name: "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+  clip_type: "minimax",
+  vae_name: "minimax_h3_video_vae_fp16.safetensors",
+  weight_dtype: "default",
+  workflow: "minimax-h3-t2i.api.json",
+  workflow_t2i: "minimax-h3-t2i.api.json",
+  workflow_refs: "minimax-h3-t2i.api.json",
+  workflow_i2v: "minimax-h3-r2v.api.json",
+  modes: ["image", "t2i", "i2i", "video"],
 };
 
 const INITIAL_FORM: NodeForm = {
-  name: "",
+  name: "西瓜本地 ComfyUI",
   type: "local_comfy",
   baseUrl: "http://127.0.0.1:8188",
   token: "",
@@ -145,9 +150,10 @@ function settingsFromRecord(settings: Record<string, unknown> | null | undefined
     clip_type: stringValue(settings?.clip_type),
     vae_name: stringValue(settings?.vae_name),
     weight_dtype: stringValue(settings?.weight_dtype),
-    workflow: stringValue(settings?.workflow),
-    workflow_t2i: stringValue(settings?.workflow_t2i),
-    workflow_refs: stringValue(settings?.workflow_refs),
+    workflow: stringValue(settings?.workflow) || DEFAULT_MODEL_SETTINGS.workflow,
+    workflow_t2i: stringValue(settings?.workflow_t2i) || DEFAULT_MODEL_SETTINGS.workflow_t2i,
+    workflow_refs: stringValue(settings?.workflow_refs) || DEFAULT_MODEL_SETTINGS.workflow_refs,
+    workflow_i2v: stringValue(settings?.workflow_i2v) || stringValue(settings?.workflow_video) || DEFAULT_MODEL_SETTINGS.workflow_i2v,
     modes: modes.length ? modes : DEFAULT_MODEL_SETTINGS.modes,
   };
 }
@@ -173,6 +179,7 @@ function compactSettings(draft: ModelSettingsDraft): Record<string, unknown> {
     "workflow",
     "workflow_t2i",
     "workflow_refs",
+    "workflow_i2v",
   ] as const) {
     const value = draft[key].trim();
     if (value) result[key] = value;
@@ -231,30 +238,40 @@ function ModelSettingsEditor({
     <div className="node-config-panel">
       <div className="node-config-block">
         <div className="node-config-title">
-          <Settings2 size={14} /> 模型参数
+          <Settings2 size={14} /> 模型参数（兜底）
         </div>
+        <p style={{ margin: "0 0 8px", fontSize: 11, color: "var(--text3)", lineHeight: 1.45 }}>
+          角色/场景卡片上的<strong>分辨率、步数优先</strong>；这里 Width/Height/Steps 只在请求未带时生效。
+          日常出角色请在「角色资产」调清晰度，不必在 ComfyUI 里改图。
+        </p>
         <div className="node-param-grid">
-          <label>Width * 必填<input value={value.width} onChange={(event) => patch({ width: event.target.value })} /></label>
-          <label>Height * 必填<input value={value.height} onChange={(event) => patch({ height: event.target.value })} /></label>
-          <label>Steps * 必填<input value={value.steps} onChange={(event) => patch({ steps: event.target.value })} /></label>
-          <label>CFG * 必填<input value={value.cfg} onChange={(event) => patch({ cfg: event.target.value })} /></label>
+          <label>Width 兜底<input value={value.width} onChange={(event) => patch({ width: event.target.value })} placeholder="请求未指定时用" /></label>
+          <label>Height 兜底<input value={value.height} onChange={(event) => patch({ height: event.target.value })} placeholder="请求未指定时用" /></label>
+          <label>Steps 兜底<input value={value.steps} onChange={(event) => patch({ steps: event.target.value })} placeholder="请求未指定时用" /></label>
+          <label>CFG 兜底<input value={value.cfg} onChange={(event) => patch({ cfg: event.target.value })} /></label>
         </div>
         <details>
-          <summary>选填项</summary>
+          <summary>工作流文件名（API 模板，不会在 Comfy 画布常驻打开）</summary>
           <div className="node-param-grid">
-            <label>模型名 / model<input value={value.model} onChange={(event) => patch({ model: event.target.value })} placeholder="例如 flux-2-klein-9b-fp8.safetensors" /></label>
+            <label>模型名 / model<input value={value.model} onChange={(event) => patch({ model: event.target.value })} placeholder="可选显示名" /></label>
             <label>Checkpoint<input value={value.ckpt_name} onChange={(event) => patch({ ckpt_name: event.target.value })} /></label>
-            <label>Unet<input value={value.unet_name} onChange={(event) => patch({ unet_name: event.target.value })} /></label>
-            <label>单 CLIP<input value={value.clip_name} onChange={(event) => patch({ clip_name: event.target.value })} placeholder="例如 qwen_3_8b_fp8mixed.safetensors" /></label>
-            <label>CLIP 类型<input value={value.clip_type} onChange={(event) => patch({ clip_type: event.target.value })} placeholder="例如 flux2" /></label>
+            <label>Unet<input value={value.unet_name} onChange={(event) => patch({ unet_name: event.target.value })} placeholder="minimax_h3_fl2va_….safetensors" /></label>
+            <label>单 CLIP<input value={value.clip_name} onChange={(event) => patch({ clip_name: event.target.value })} placeholder="qwen3vl_32b_minimax_….safetensors" /></label>
+            <label>CLIP 类型<input value={value.clip_type} onChange={(event) => patch({ clip_type: event.target.value })} placeholder="minimax" /></label>
             <label>CLIP1<input value={value.clip1} onChange={(event) => patch({ clip1: event.target.value })} /></label>
             <label>CLIP2<input value={value.clip2} onChange={(event) => patch({ clip2: event.target.value })} /></label>
-            <label>VAE<input value={value.vae_name} onChange={(event) => patch({ vae_name: event.target.value })} /></label>
-            <label>权重精度<input value={value.weight_dtype} onChange={(event) => patch({ weight_dtype: event.target.value })} placeholder="default / fp8_e4m3fn" /></label>
-            <label>默认工作流<input value={value.workflow} onChange={(event) => patch({ workflow: event.target.value })} placeholder="例如 flux-t2i.api.json" /></label>
-            <label>文生图工作流<input value={value.workflow_t2i} onChange={(event) => patch({ workflow_t2i: event.target.value })} placeholder="无参考图时使用" /></label>
-            <label>参考图工作流<input value={value.workflow_refs} onChange={(event) => patch({ workflow_refs: event.target.value })} placeholder="有参考图时使用，例如 flux2-klein-triref.api.json" /></label>
+            <label>VAE<input value={value.vae_name} onChange={(event) => patch({ vae_name: event.target.value })} placeholder="minimax_h3_video_vae_fp16.safetensors" /></label>
+            <label>权重精度<input value={value.weight_dtype} onChange={(event) => patch({ weight_dtype: event.target.value })} placeholder="default" /></label>
+            <label>默认工作流<input value={value.workflow} onChange={(event) => patch({ workflow: event.target.value })} placeholder="minimax-h3-t2i.api.json" /></label>
+            <label>文生图（角色/场景）<input value={value.workflow_t2i} onChange={(event) => patch({ workflow_t2i: event.target.value })} placeholder="minimax-h3-t2i.api.json" /></label>
+            <label>参考图工作流<input value={value.workflow_refs} onChange={(event) => patch({ workflow_refs: event.target.value })} placeholder="minimax-h3-t2i.api.json" /></label>
+            <label>多参考视频 r2v<input value={value.workflow_i2v} onChange={(event) => patch({ workflow_i2v: event.target.value })} placeholder="minimax-h3-r2v.api.json" /></label>
           </div>
+          <p style={{ margin: "8px 0 0", fontSize: 11, color: "var(--text3)", lineHeight: 1.45 }}>
+            仅启用两套 H3 Turbo：<code>minimax-h3-t2i.api.json</code>（文生图）与{" "}
+            <code>minimax-h3-r2v.api.json</code>（多参考视频）。旧 Flux/Kontext/LTX/i2v 已废弃。
+            Unet 必须用<strong>非 pruned</strong> 的 <code>minimax_h3_fl2va_int8_convrot.safetensors</code>，步数 4。
+          </p>
         </details>
       </div>
 
@@ -354,8 +371,12 @@ export default function ComputeNodesView() {
     setForm((current) => ({ ...current, provider, baseUrl: defaults.baseUrl, model: defaults.model }));
   };
 
-  const bodyFromForm = (draft: NodeForm): ComputeNodeInput => {
+  const bodyFromForm = (draft: NodeForm, opts?: { keepSecretsIfEmpty?: boolean }): ComputeNodeInput => {
     const modelSettings = compactSettings(draft.modelSettings);
+    const token = draft.token.trim();
+    const apiKey = draft.apiKey.trim();
+    // 编辑时：密钥留空表示沿用已存值，不提交空串覆盖
+    const keepSecrets = opts?.keepSecretsIfEmpty === true;
     return {
       name: draft.name.trim() || defaultNodeName(draft),
       type: draft.type,
@@ -366,12 +387,12 @@ export default function ComputeNodesView() {
       model_settings: modelSettings,
       adapter_code: draft.adapterCode,
       adapter_filename: draft.adapterFilename,
-      ...(draft.type === "remote_comfy" && draft.token.trim() ? { token: draft.token.trim() } : {}),
+      ...(draft.type === "remote_comfy" && token ? { token } : {}),
       ...(draft.type === "cloud_api"
         ? {
             provider: draft.provider,
-            api_key: draft.apiKey.trim(),
             model: draft.model.trim(),
+            ...(!keepSecrets || apiKey ? { api_key: apiKey } : {}),
           }
         : {}),
     };
@@ -393,6 +414,45 @@ export default function ComputeNodesView() {
         error: !result.online,
         text: result.online ? `${node.name} 连接正常` : `${node.name}：${result.error || "连接失败"}`,
       });
+    });
+
+  /** 导出两个调试工作流到 ComfyUI，便于界面打开调参 */
+  const exportWorkflows = (node: ComputeNodeRecord) =>
+    runAction(`export-${node.id}`, async () => {
+      const result = await exportComfyWorkflows(node.id);
+      const dir = result.comfy_workflows_dir || result.local_dir || "";
+      const names = (result.comfy_files || result.files || []).map((f) => f.split(/[/\\]/).pop()).join("、");
+      setNotice({
+        error: !result.ok,
+        text: result.ok
+          ? `已导出：${names || "工作流"}。目录：${dir}。${result.how_to_open || "请在 ComfyUI 中 Open 这两个文件调试。"}`
+          : "导出失败",
+      });
+    });
+
+  /** 从 Comfy 最近一次 Queue 任务同步 width/height/steps */
+  const syncFromComfy = (node: ComputeNodeRecord) =>
+    runAction(`sync-${node.id}`, async () => {
+      const result = await syncComfyParams(node.id, { source: "history", apply: true });
+      if (!result.ok) {
+        setNotice({ error: true, text: result.message || "同步失败：请先在 Comfy 里跑一遍调试工作流" });
+        return;
+      }
+      const p = result.params || {};
+      setNotice({
+        error: false,
+        text:
+          result.message ||
+          `已同步：${p.width || "?"}×${p.height || "?"} · steps=${p.steps ?? "?"} · kind=${p.kind || "?"}`,
+      });
+      // 若正在编辑该节点，刷新表单里的参数
+      if (editingId === node.id && result.model_settings) {
+        setEditForm((current) =>
+          current
+            ? { ...current, modelSettings: settingsFromRecord(result.model_settings as Record<string, unknown>) }
+            : current,
+        );
+      }
     });
 
   const toggle = (node: ComputeNodeRecord) =>
@@ -439,8 +499,9 @@ export default function ComputeNodesView() {
     event.preventDefault();
     if (!editingNode || !editForm) return;
     await runAction(`edit-${editingNode.id}`, async () => {
-      await updateComputeNode(editingNode.id, bodyFromForm(editForm));
+      await updateComputeNode(editingNode.id, bodyFromForm(editForm, { keepSecretsIfEmpty: true }));
       setNotice({ error: false, text: `${editForm.name || editingNode.name} 配置已保存` });
+      setEditForm((current) => (current ? { ...current, token: "", apiKey: "" } : current));
     });
   };
 
@@ -451,7 +512,12 @@ export default function ComputeNodesView() {
   return (
     <div className="feature-view compute-view">
       <div className="feature-header">
-        <div><h2>算力节点</h2><p>配置模型服务、工作流参数和 TS 适配器</p></div>
+        <div>
+          <h2>算力节点</h2>
+          <p>
+            配置 Comfy / 云模型。Comfy 节点可用「导出工作流」在 ComfyUI 打开调试，调完后用「同步参数」写回西瓜。
+          </p>
+        </div>
         <span className="pill" style={{ border: "1px solid var(--border2)", color: "var(--text2)" }}>
           <Activity size={13} /> {nodes.filter((node) => node.is_active).length} 个启用
         </span>
@@ -503,6 +569,26 @@ export default function ComputeNodesView() {
                 <button type="button" title="测试连接" disabled={busy === `test-${node.id}`} onClick={() => void test(node)}>
                   {busy === `test-${node.id}` ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
                 </button>
+                {(node.type === "local_comfy" || node.type === "remote_comfy") && (
+                  <>
+                    <button
+                      type="button"
+                      title="导出调试工作流到 ComfyUI（角色出图 + 多参考视频）"
+                      disabled={busy === `export-${node.id}`}
+                      onClick={() => void exportWorkflows(node)}
+                    >
+                      {busy === `export-${node.id}` ? <LoaderCircle className="spin" size={14} /> : <FileCode2 size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      title="从 Comfy 最近任务同步参数回西瓜"
+                      disabled={busy === `sync-${node.id}`}
+                      onClick={() => void syncFromComfy(node)}
+                    >
+                      {busy === `sync-${node.id}` ? <LoaderCircle className="spin" size={14} /> : <HardDrive size={14} />}
+                    </button>
+                  </>
+                )}
                 <button type="button" title="编辑配置" onClick={() => startEdit(node)}>
                   <Settings2 size={14} />
                 </button>
@@ -525,8 +611,70 @@ export default function ComputeNodesView() {
               <form onSubmit={(event) => void saveEdit(event)}>
                 <label>节点名称</label>
                 <input value={editForm.name} onChange={(event) => setEditForm({ ...editForm, name: event.target.value })} />
+                <label>节点类型</label>
+                <input value={TYPE_LABELS[editForm.type]} readOnly disabled />
+                {editForm.type === "cloud_api" && (
+                  <>
+                    <label>Provider</label>
+                    <select
+                      value={editForm.provider}
+                      onChange={(event) => {
+                        const provider = event.target.value as keyof typeof CLOUD_DEFAULTS;
+                        const defaults = CLOUD_DEFAULTS[provider];
+                        setEditForm({
+                          ...editForm,
+                          provider,
+                          baseUrl: editForm.baseUrl || defaults.baseUrl,
+                          model: editForm.model || defaults.model,
+                        });
+                      }}
+                    >
+                      <option value="wan">WAN（通义万相）</option>
+                      <option value="seedance">Seedance（火山）</option>
+                    </select>
+                  </>
+                )}
                 <label>Base URL</label>
                 <input value={editForm.baseUrl} onChange={(event) => setEditForm({ ...editForm, baseUrl: event.target.value })} />
+                {editForm.type === "remote_comfy" && (
+                  <>
+                    <label>
+                      Token{editingNode.token_configured ? "（已配置，留空不改）" : ""}
+                    </label>
+                    <input
+                      type="password"
+                      value={editForm.token}
+                      onChange={(event) => setEditForm({ ...editForm, token: event.target.value })}
+                      autoComplete="new-password"
+                      placeholder={editingNode.token_configured ? "••••••••" : "请输入远程鉴权 Token"}
+                    />
+                  </>
+                )}
+                {editForm.type === "cloud_api" && (
+                  <>
+                    <label>
+                      API Key{editingNode.api_key_configured ? "（已配置，留空不改）" : " * 必填"}
+                    </label>
+                    <input
+                      type="password"
+                      value={editForm.apiKey}
+                      onChange={(event) => setEditForm({ ...editForm, apiKey: event.target.value })}
+                      autoComplete="new-password"
+                      placeholder={editingNode.api_key_configured ? "••••••••" : "sk-..."}
+                    />
+                    {!editingNode.api_key_configured && !editForm.apiKey.trim() && (
+                      <small style={{ color: "var(--danger, #f66)", marginTop: -6 }}>
+                        该节点尚未配置 API Key，保存前请填写
+                      </small>
+                    )}
+                    <label>云模型</label>
+                    <input
+                      value={editForm.model}
+                      onChange={(event) => setEditForm({ ...editForm, model: event.target.value })}
+                      placeholder="例如 wanx-v1"
+                    />
+                  </>
+                )}
                 <label>优先级</label>
                 <input type="number" value={editForm.priority} onChange={(event) => setEditForm({ ...editForm, priority: Number(event.target.value) })} />
                 <ModelSettingsEditor
@@ -544,7 +692,19 @@ export default function ComputeNodesView() {
                   <input type="checkbox" checked={editForm.active} onChange={(event) => setEditForm({ ...editForm, active: event.target.checked })} />
                   启用该节点
                 </label>
-                <button className="btn-primary" disabled={busy === `edit-${editingNode.id}`}>
+                <button
+                  className="btn-primary"
+                  disabled={
+                    busy === `edit-${editingNode.id}`
+                    || !editForm.baseUrl.trim()
+                    || (
+                      editForm.type === "cloud_api"
+                      && !editingNode.api_key_configured
+                      && !editForm.apiKey.trim()
+                    )
+                    || (editForm.type === "cloud_api" && !editForm.model.trim())
+                  }
+                >
                   {busy === `edit-${editingNode.id}` ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />} 保存配置
                 </button>
                 <button className="btn-secondary" type="button" onClick={() => { setEditingId(null); setEditForm(null); }}>

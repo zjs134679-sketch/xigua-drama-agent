@@ -1,0 +1,172 @@
+{
+  "6": {
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNETLoader"
+    },
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "13": {
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "CLIPLoader"
+    },
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "11": {
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAELoader"
+    },
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+  },
+  "104": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "_meta": {
+      "title": "MiniMax H3 T2I"
+    },
+    "inputs": {
+      "clip": [
+        "13",
+        0
+      ],
+      "vae": [
+        "11",
+        0
+      ],
+      "prompt": "cinematic still, Chinese short drama character, detailed face, natural skin, film lighting, high quality",
+      "width": 960,
+      "height": 544,
+      "length": 5
+    }
+  },
+  "16": {
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "BasicGuider"
+    },
+    "inputs": {
+      "model": [
+        "6",
+        0
+      ],
+      "conditioning": [
+        "104",
+        0
+      ]
+    }
+  },
+  "17": {
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    },
+    "inputs": {
+      "sampler_name": "res_multistep"
+    }
+  },
+  "9": {
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "BasicScheduler"
+    },
+    "inputs": {
+      "model": [
+        "6",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 10,
+      "denoise": 1.0
+    }
+  },
+  "15": {
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    },
+    "inputs": {
+      "noise_seed": 123456789
+    }
+  },
+  "14": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    },
+    "inputs": {
+      "noise": [
+        "15",
+        0
+      ],
+      "guider": [
+        "16",
+        0
+      ],
+      "sampler": [
+        "17",
+        0
+      ],
+      "sigmas": [
+        "9",
+        0
+      ],
+      "latent_image": [
+        "104",
+        1
+      ]
+    }
+  },
+  "10": {
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAEDecode"
+    },
+    "inputs": {
+      "samples": [
+        "14",
+        0
+      ],
+      "vae": [
+        "11",
+        0
+      ]
+    }
+  },
+  "112": {
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "First frame"
+    },
+    "inputs": {
+      "image": [
+        "10",
+        0
+      ],
+      "batch_index": 0,
+      "length": 1
+    }
+  },
+  "200": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "SaveImage"
+    },
+    "inputs": {
+      "filename_prefix": "xigua_minimax_h3_t2i",
+      "images": [
+        "112",
+        0
+      ]
+    }
+  }
+}

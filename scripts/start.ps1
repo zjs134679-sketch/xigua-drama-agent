@@ -75,10 +75,25 @@ function Start-LoggedProcess(
 Write-Step "项目目录：$Root"
 
 $BackendPython = Join-Path $Root "backend\.venv\Scripts\python.exe"
-$AuthPython = Join-Path $Root "auth-server\.venv\Scripts\python.exe"
+# 授权服务实体在「E:\xigua Agent  密码管理\auth-server」；工程内 auth-server 为联接目录
+$AuthRootCandidates = @(
+    (Join-Path $Root "auth-server"),
+    "E:\xigua Agent  密码管理\auth-server"
+)
+$AuthRoot = $null
+$AuthPython = $null
+foreach ($cand in $AuthRootCandidates) {
+    $py = Join-Path $cand ".venv\Scripts\python.exe"
+    $main = Join-Path $cand "app\main.py"
+    if ((Test-Path -LiteralPath $py) -and (Test-Path -LiteralPath $main)) {
+        $AuthRoot = $cand
+        $AuthPython = $py
+        break
+    }
+}
 $Npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
 if (-not (Test-Path $BackendPython)) { throw "后端环境不存在：请先运行 scripts\build_backend.bat" }
-if (-not (Test-Path $AuthPython)) { throw "认证环境不存在：$AuthPython" }
+if (-not $AuthPython) { throw "认证环境不存在。请确认「E:\xigua Agent  密码管理\auth-server」完整，或双击该目录 一键启动.bat" }
 if (-not $Npm) { throw "未找到 Node.js/npm，请先安装 Node.js" }
 if (-not (Test-Path (Join-Path $Root "frontend\node_modules"))) {
     Write-Step "首次安装前端依赖"
@@ -88,11 +103,11 @@ if (-not (Test-Path (Join-Path $Root "frontend\node_modules"))) {
 }
 
 # Authentication must be ready before backend downloads the compliance dictionary.
-$authRunning = Clear-StaleProjectPort "认证服务" 8100 "http://127.0.0.1:8100/openapi.json"
+$authRunning = Clear-StaleProjectPort "认证服务" 8100 "http://127.0.0.1:8100/health"
 if (-not $authRunning) {
-    Write-Step "启动认证服务"
-    Start-LoggedProcess "auth" $AuthPython @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8100") (Join-Path $Root "auth-server")
-    Wait-Url "认证服务" "http://127.0.0.1:8100/openapi.json"
+    Write-Step "启动认证/注册服务 :8100  ($AuthRoot)"
+    Start-LoggedProcess "auth" $AuthPython @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8100") $AuthRoot
+    Wait-Url "认证服务" "http://127.0.0.1:8100/health"
 }
 
 $backendRunning = Clear-StaleProjectPort "后端服务" 5678 "http://127.0.0.1:5678/openapi.json"

@@ -34,7 +34,8 @@ class StoryboardUpdate(BaseModel):
     sound_effect: str | None = None
     dialogue: str | None = None
     description: str | None = None
-    duration: int | None = Field(default=None, ge=1, le=60)
+    # 与本地 ComfyUI 单镜视频上限一致（最长 5 秒）
+    duration: int | None = Field(default=None, ge=1, le=5)
     speaking_character_id: int | None = None
     reference_images: list[str] | None = None
 
@@ -54,4 +55,11 @@ class BatchGenerateImageRequest(BaseModel):
 class BatchGeneratePromptRequest(BaseModel):
     ids: list[int]
     temperature: float = 0.4
+    username: str | None = None
+
+
+class StoryboardSplitRequest(BaseModel):
+    """长镜拆解：把一镜拆成连续 3–5 秒子镜。"""
+    parts: int | None = Field(default=None, ge=2, le=4)
+    use_llm: bool = True
     username: str | None = None

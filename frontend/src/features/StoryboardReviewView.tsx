@@ -94,7 +94,19 @@ export default function StoryboardReviewView({
         instruction: instruction.trim() || undefined,
       });
       setReport(result.review);
-      setNotice(`Agent 已整改 ${result.changed_count} 个镜头。你可以重新审核，或进入分镜台继续手动修改。`);
+      const residual = result.residual_count ?? result.review.issues.length;
+      const unresolved = result.unresolved?.length
+        ? ` 无法自动处理：${result.unresolved.slice(0, 3).join("；")}`
+        : "";
+      if (residual > 0) {
+        setNotice(
+          `已改 ${result.changed_count} 个镜头，硬规则仍剩 ${residual} 条（多需拆镜或补资产）。清单已刷新为「改后重验」结果。${unresolved}`,
+        );
+      } else {
+        setNotice(
+          `已改 ${result.changed_count} 个镜头，硬规则已清空。请点「重新审核」做语义复查，或去分镜台微调。`,
+        );
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "一键整改失败");
     } finally {
@@ -136,7 +148,7 @@ export default function StoryboardReviewView({
             <div className="review-empty">
               <ClipboardCheck size={42} />
               <h3>还没有审核报告</h3>
-              <p>Agent 将逐项检查台词完整性、人物连续性、资产关联、VO 音画同步、时长、景别和拆镜粒度。</p>
+              <p>Agent 将检查台词、资产关联、时长、景别等。一键整改可改字段，但<strong>不能自动拆镜</strong>；长台词需到分镜台拆分。</p>
               <button className="review-run" onClick={review} disabled={reviewing}><Sparkles size={14} /> 开始首次审核</button>
             </div>
           ) : (
@@ -159,15 +171,36 @@ export default function StoryboardReviewView({
 
               {report.remediation && (
                 <section className="review-remediation">
-                  <div><Wand2 size={16} /><strong>已执行一键整改</strong><span>{report.remediation.summary}</span></div>
-                  <button className="btn-secondary" onClick={onOpenStoryboard}><Edit3 size={13} /> 去分镜台手动修改</button>
-                  <button className="btn-secondary" onClick={review} disabled={reviewing}><RefreshCw size={13} /> 整改后重新审核</button>
+                  <div>
+                    <Wand2 size={16} />
+                    <strong>已执行一键整改</strong>
+                    <span>{report.remediation.summary}</span>
+                  </div>
+                  {report.remediation.auto_summary && (
+                    <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--text2)" }}>{report.remediation.auto_summary}</p>
+                  )}
+                  {!!report.remediation.unresolved?.length && (
+                    <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, color: "var(--amber)" }}>
+                      {report.remediation.unresolved.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {report.remediation.note && (
+                    <p style={{ margin: "8px 0 0", fontSize: 11, color: "var(--text3)" }}>{report.remediation.note}</p>
+                  )}
+                  <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                    <button className="btn-secondary" onClick={onOpenStoryboard}><Edit3 size={13} /> 去分镜台拆镜/手改</button>
+                    <button className="btn-secondary" onClick={review} disabled={reviewing}>
+                      <RefreshCw size={13} /> 重新审核（语义复查）
+                    </button>
+                  </div>
                 </section>
               )}
 
               <section className="review-report">
                 <div className="review-report-head">
-                  <h3>问题清单</h3>
+                  <h3>{report.remediation ? "整改后剩余问题（硬规则重验）" : "问题清单"}</h3>
                   <span>{filter === "all" ? `全部 ${issues.length}` : `${SEVERITY[filter].label} ${issues.length}`}</span>
                 </div>
                 {!issues.length ? (

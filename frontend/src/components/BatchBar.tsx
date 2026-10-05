@@ -16,19 +16,24 @@ export default function BatchBar({
   selectedCount,
   onSelectAll,
   onSelectUngenerated,
+  onSelectSegment,
+  segmentCount,
   onInvert,
   onClear,
   onRun,
   onStop,
   running,
   progressText,
-  runLabel = "批量生成图片",
+  runLabel = "批量出图",
 }: {
   total: number;
   ungeneratedCount: number;
   selectedCount: number;
   onSelectAll: () => void;
   onSelectUngenerated: () => void;
+  /** 选中当前检视镜头所在运镜段落（如 5 段） */
+  onSelectSegment?: () => void;
+  segmentCount?: number;
   onInvert: () => void;
   onClear: () => void;
   onRun: () => void;
@@ -62,6 +67,17 @@ export default function BatchBar({
       >
         <ListChecks size={13} /> 未生成（{ungeneratedCount}）
       </button>
+      {onSelectSegment && (
+        <button
+          className="btn-secondary"
+          style={chip}
+          onClick={onSelectSegment}
+          disabled={running || !segmentCount}
+          title="勾选当前镜头所属运镜段落的全部子镜"
+        >
+          <ListChecks size={13} /> 选本段落{segmentCount ? `（${segmentCount}）` : ""}
+        </button>
+      )}
       <button className="btn-secondary" style={chip} onClick={onInvert} disabled={running} title="反向选择">
         <FlipHorizontal2 size={13} /> 反选
       </button>

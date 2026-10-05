@@ -14,8 +14,10 @@ class ImageJob:
     steps: int | None = None
     cfg: float | None = None
     seed: int | None = None
-    workflow: str = "flux-t2i.api.json"
+    workflow: str = "minimax-h3-t2i.api.json"
     reference_images: list[str] = field(default_factory=list)
+    # 云视频任务时长（秒）；文生图可忽略
+    duration: int | None = None
 
 
 @dataclass

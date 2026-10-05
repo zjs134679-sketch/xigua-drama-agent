@@ -12,6 +12,7 @@ from app.models.domain import Episode
 from app.schemas.project import ExtractRequest
 from app.services.agents.extract_agent import extract, save_extracted
 from app.services.compliance import FilterResult, check, enforce
+from app.services.license_gate import require_valid_license
 from app.services.llm.client import LLMNotConfigured
 
 router = APIRouter(prefix="/extract", tags=["extract"])
@@ -48,7 +49,11 @@ def _block(
 
 
 @router.post("")
-def run_extract(req: ExtractRequest, db: Session = Depends(get_db)) -> dict:
+def run_extract(
+    req: ExtractRequest,
+    db: Session = Depends(get_db),
+    _license: dict = Depends(require_valid_license),
+) -> dict:
     ensure_active_user(db, req.username)
     ep = db.get(Episode, req.episode_id)
     if not ep:
@@ -62,7 +67,7 @@ def run_extract(req: ExtractRequest, db: Session = Depends(get_db)) -> dict:
         _block(db, req.username, input_result, "extract_input", "内容触发红线，已拦截并记录")
 
     try:
-        extracted = extract(db, content)
+        extracted = extract(db, content, drama_id=ep.drama_id)
     except LLMNotConfigured as e:
         raise HTTPException(400, str(e))
     except httpx.HTTPError as e:

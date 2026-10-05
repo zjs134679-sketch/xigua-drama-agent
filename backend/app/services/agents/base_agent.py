@@ -97,12 +97,9 @@ class BaseAgent:
 
     @classmethod
     def load_skill(cls, name: str) -> str:
-        text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
-        if text.startswith("---"):
-            parts = text.split("---", 2)
-            if len(parts) == 3:
-                return parts[2].strip()
-        return text
+        from app.services.agents.script_agent import load_skill as _load
+
+        return _load(name)
 
     def _build_messages(self, user_input: str) -> list[dict]:
         return [

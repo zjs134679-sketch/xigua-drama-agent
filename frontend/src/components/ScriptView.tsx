@@ -32,10 +32,12 @@ export default function ScriptView({
   username,
   current,
   onBanned,
+  onGoto,
 }: {
   username: string;
   current?: { drama: Project; episode: EpisodeSummary } | null;
   onBanned?: () => void;
+  onGoto?: (view: string) => void;
 }) {
   const episode = current?.episode ?? null;
   const [novel, setNovel] = useState(
@@ -104,6 +106,19 @@ export default function ScriptView({
           <span style={{ fontSize: 11, color: "var(--text3)" }}>小说 → 编剧 Agent → 格式化剧本（快速试写，未关联项目）</span>
         )}
         <div style={{ flex: 1 }} />
+        {script && onGoto ? (
+          <>
+            <button type="button" className="btn-secondary" style={{ width: "auto", padding: "6px 12px" }} onClick={() => onGoto("characters")}>
+              下一步：提取/出角色
+            </button>
+            <button type="button" className="btn-secondary" style={{ width: "auto", padding: "6px 12px" }} onClick={() => onGoto("storyboard")}>
+              去镜头脚本
+            </button>
+            <button type="button" className="btn-secondary" style={{ width: "auto", padding: "6px 12px" }} onClick={() => onGoto("timeline")}>
+              去成片
+            </button>
+          </>
+        ) : null}
         <button className="btn-primary" style={{ width: "auto", padding: "6px 14px", opacity: loading ? 0.7 : 1 }} onClick={run} disabled={loading}>
           {loading ? (
             <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}><Loader2 size={14} className="spin" /> 生成中…</span>

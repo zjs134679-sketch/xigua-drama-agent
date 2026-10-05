@@ -62,7 +62,7 @@ def test_extract_llm_yellow_output_returns_warning(monkeypatch: pytest.MonkeyPat
         "props": [],
     }
     monkeypatch.setattr(extract_api, "ensure_active_user", lambda *_args: None)
-    monkeypatch.setattr(extract_api, "extract", lambda *_args: extracted)
+    monkeypatch.setattr(extract_api, "extract", lambda *_args, **_kw: extracted)
     monkeypatch.setattr(extract_api, "check", lambda text: warning if "占位输出黄线词" in text else passed)
     monkeypatch.setattr(
         extract_api,
@@ -87,7 +87,7 @@ def test_extract_llm_red_output_is_not_saved(monkeypatch: pytest.MonkeyPatch):
     passed = FilterResult("pass", [])
     extracted = {"characters": [], "scenes": [], "props": [{"name": "占位提取红线词"}]}
     monkeypatch.setattr(extract_api, "ensure_active_user", lambda *_args: None)
-    monkeypatch.setattr(extract_api, "extract", lambda *_args: extracted)
+    monkeypatch.setattr(extract_api, "extract", lambda *_args, **_kw: extracted)
     monkeypatch.setattr(extract_api, "check", lambda text: blocked if "占位提取红线词" in text else passed)
     monkeypatch.setattr(enforce, "report_to_auth", lambda *_args: None)
 

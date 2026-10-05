@@ -3,11 +3,28 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class StyleBibleIn(BaseModel):
+    """项目风格圣经（西瓜原创）。"""
+
+    art_style_id: int | None = None
+    visual_pack: str | None = None
+    visual_name: str | None = None
+    narrative_tag: str | None = None
+    pacing_profile: str | None = "pace_balanced"
+    aspect: str | None = "9:16"
+    version: int | None = 1
+
+
 class DramaCreate(BaseModel):
     title: str
     description: str | None = None
     genre: str | None = None
     style: str | None = "realistic"
+    # 风格圣经字段（可选；写入 style_bible JSON）
+    art_style_id: int | None = None
+    pacing_profile: str | None = None
+    narrative_tag: str | None = None
+    aspect: str | None = None
 
 
 class EpisodeCreate(BaseModel):

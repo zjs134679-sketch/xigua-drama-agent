@@ -31,7 +31,27 @@ def _ensure_columns() -> None:
         return
     required: dict[str, list[tuple[str, str]]] = {
         "art_styles": [("constraint_manual", "TEXT")],
-        "storyboards": [("speaking_character_id", "INTEGER")],
+        "dramas": [
+            ("director_manual", "TEXT"),
+            ("visual_manual", "TEXT"),
+            ("banned_elements", "TEXT"),
+            ("memory_json", "TEXT"),
+            ("model_map_json", "TEXT"),
+            ("style_bible", "TEXT"),
+        ],
+        "storyboards": [
+            ("speaking_character_id", "INTEGER"),
+            ("segment_key", "TEXT"),
+            ("segment_title", "TEXT"),
+            ("segment_part", "INTEGER"),
+            ("segment_total", "INTEGER"),
+            ("last_frame_image", "TEXT"),
+            ("first_frame_image", "TEXT"),
+            ("trim_in", "REAL"),
+            ("trim_out", "REAL"),
+            ("selected_video_id", "INTEGER"),
+            ("novel_event_id", "INTEGER"),
+        ],
     }
     with engine.begin() as conn:
         for table, cols in required.items():
@@ -47,7 +67,8 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
-    from app.services.voice_assignment import seed_preset_voices
+    from app.services.art_style_seed import seed_preset_art_styles
 
     with SessionLocal() as db:
-        seed_preset_voices(db)
+        # 启动自动：补全新预设 + 包版本 bump 时刷新西瓜系统手册（已取消 TTS 音色种子）
+        seed_preset_art_styles(db, write_version=True)

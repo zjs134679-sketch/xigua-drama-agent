@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
+from app.services.license_gate import require_valid_license
 from app.models.domain import ArtStyle, Character, ImageGeneration, Prop, Scene, Storyboard
 from app.schemas.assets import (
     ArtStyleCreate,
@@ -14,6 +15,12 @@ from app.schemas.assets import (
     CharacterGenerateRequest,
     PropGenerateRequest,
     SceneGenerateRequest,
+)
+from app.services.art_style_pack import (
+    art_prompt_template,
+    extract_video_style_tags,
+    load_pack,
+    skill_key_for_style,
 )
 from app.services.asset_generation import (
     AssetGenerationError,
@@ -29,8 +36,9 @@ styles_router = APIRouter(prefix="/art-styles", tags=["art-styles"])
 assets_router = APIRouter(prefix="/assets", tags=["assets"])
 
 
-def style_view(row: ArtStyle) -> dict:
-    return {
+def style_view(row: ArtStyle, *, with_pack: bool = False) -> dict:
+    """列表默认轻量返回；详情/pack 再带技能包元数据。"""
+    data = {
         "id": row.id,
         "name": row.name,
         "prompt_suffix": row.prompt_suffix,
@@ -38,15 +46,43 @@ def style_view(row: ArtStyle) -> dict:
         "thumbnail": row.thumbnail,
         "sort_order": row.sort_order,
         "constraint_manual": row.constraint_manual,
+        "skill_key": None,
+        "pack_files": [],
+        "pack_complete": False,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+    if with_pack:
+        skill_key = skill_key_for_style(row)
+        pack = load_pack(skill_key) if skill_key else None
+        data["skill_key"] = skill_key
+        data["pack_files"] = pack["file_list"] if pack else []
+        data["pack_complete"] = bool(pack and len(pack.get("file_list", [])) >= 10)
+    return data
 
 
 @styles_router.get("")
 def list_styles(db: Session = Depends(get_db)) -> list[dict]:
     rows = db.scalars(select(ArtStyle).order_by(ArtStyle.sort_order, ArtStyle.id)).all()
-    return [style_view(row) for row in rows]
+    # 列表不做包扫描，避免卡顿导致前端像“没风格”
+    return [style_view(row, with_pack=False) for row in rows]
+
+
+@styles_router.post("/seed")
+def seed_styles(
+    force: bool = Query(False, description="true 时用技能包覆盖库内后缀与约束手册"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """从 data/skills/art_styles 同步西瓜原创画风预设。
+
+    默认：空字段补全 + 明显短于完整手册的系统种子自动升级。
+    force=1：强制用技能包覆盖。
+    """
+    from app.services.art_style_seed import seed_preset_art_styles
+
+    result = seed_preset_art_styles(db, force=force)
+    rows = db.scalars(select(ArtStyle).order_by(ArtStyle.sort_order, ArtStyle.id)).all()
+    return {**result, "styles": [style_view(row) for row in rows]}
 
 
 @styles_router.get("/{style_id}")
@@ -54,7 +90,32 @@ def get_style(style_id: int, db: Session = Depends(get_db)) -> dict:
     row = db.get(ArtStyle, style_id)
     if row is None:
         raise HTTPException(404, "画风不存在")
-    return style_view(row)
+    return style_view(row, with_pack=True)
+
+
+@styles_router.get("/{style_id}/pack")
+def get_style_pack(style_id: int, db: Session = Depends(get_db)) -> dict:
+    """返回画风技能包全文：constraint + prompts + direction。"""
+    row = db.get(ArtStyle, style_id)
+    if row is None:
+        raise HTTPException(404, "画风不存在")
+    key = skill_key_for_style(row)
+    if not key:
+        raise HTTPException(404, "该画风未绑定技能包")
+    pack = load_pack(key)
+    if pack is None:
+        raise HTTPException(404, f"技能包不存在: {key}")
+    return {
+        "style_id": style_id,
+        "style_name": row.name,
+        **pack,
+        "video_tags_en": extract_video_style_tags(key, prefer="en"),
+        "video_tags_zh": extract_video_style_tags(key, prefer="zh"),
+        "templates": {
+            name: art_prompt_template(key, name)
+            for name in ("character", "scene", "prop", "video")
+        },
+    }
 
 
 @styles_router.post("", status_code=201)
@@ -89,10 +150,17 @@ def delete_style(style_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 def _outcome_view(outcome: GenerationOutcome) -> dict:
+    # 与分镜接口一致：返回 /oss/ 永久地址，避免 Comfy 临时 /view 链多图串台
+    saved = None
+    if outcome.asset is not None and outcome.asset.url:
+        saved = outcome.asset.url
+    elif outcome.result.image_path:
+        from pathlib import Path
+        saved = "/oss/" + Path(outcome.result.image_path).name
     return {
         "status": outcome.result.status,
         "asset_id": outcome.asset.id,
-        "image_url": outcome.result.image_url,
+        "image_url": saved or outcome.result.image_url,
         "local_path": outcome.result.image_path,
         "prompt": outcome.prompt,
         "workflow": outcome.workflow,
@@ -158,12 +226,59 @@ def list_asset_history(target_type: str, target_id: int, db: Session = Depends(g
     return [_history_view(row) for row in rows]
 
 
+@assets_router.post("/upload")
+async def upload_media(
+    file: UploadFile = File(...),
+    target_type: str = Form(...),
+    target_id: int = Form(...),
+    username: str | None = Form(None),
+    db: Session = Depends(get_db),
+    _license: dict = Depends(require_valid_license),
+) -> dict:
+    """上传本地图片/视频并绑定到角色、场景、道具或分镜。
+
+    target_type:
+      - character / scene / prop → 图片
+      - storyboard_image → 分镜图
+      - storyboard_video → 分镜视频（成片台可用）
+    """
+    ensure_active_user(db, username)
+    from app.services.media_upload import MediaUploadError, attach_media
+
+    raw = await file.read()
+    try:
+        return attach_media(
+            db,
+            target_type=target_type,
+            target_id=int(target_id),
+            data=raw,
+            original_name=file.filename or "upload.bin",
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except MediaUploadError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"上传失败：{exc}") from exc
+
+
 @assets_router.post("/history/{image_gen_id}/use")
 def use_asset_history(image_gen_id: int, db: Session = Depends(get_db)) -> dict:
     generation = db.get(ImageGeneration, image_gen_id)
     if generation is None or generation.status != "completed":
         raise HTTPException(404, "历史图片不存在")
-    target_config = _HISTORY_TARGETS.get(generation.image_type or "")
+    # image_type 缺失时按外键字段推断（拆镜/旧数据更稳）
+    image_type = generation.image_type or ""
+    if image_type not in _HISTORY_TARGETS:
+        if generation.storyboard_id is not None:
+            image_type = "storyboard"
+        elif generation.character_id is not None:
+            image_type = "character"
+        elif generation.scene_id is not None:
+            image_type = "scene"
+        elif generation.prop_id is not None:
+            image_type = "prop"
+    target_config = _HISTORY_TARGETS.get(image_type)
     if target_config is None:
         raise HTTPException(400, "历史图片未关联素材")
     model, field = target_config
@@ -175,13 +290,15 @@ def use_asset_history(image_gen_id: int, db: Session = Depends(get_db)) -> dict:
     selected_image = generation.image_url or generation.local_path
     if isinstance(target, Storyboard):
         target.composed_image = selected_image
+        if not target.first_frame_image:
+            target.first_frame_image = selected_image
         target.status = "image_done"
     else:
-        target.image_url = generation.image_url
+        target.image_url = generation.image_url or selected_image
         target.local_path = generation.local_path
     db.commit()
     return {
-        "target_type": generation.image_type,
+        "target_type": image_type,
         "target_id": target_id,
         "image_url": selected_image,
         "local_path": generation.local_path,
@@ -189,7 +306,11 @@ def use_asset_history(image_gen_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @assets_router.post("/character/generate")
-async def generate_character(body: CharacterGenerateRequest, db: Session = Depends(get_db)):
+async def generate_character(
+    body: CharacterGenerateRequest,
+    db: Session = Depends(get_db),
+    _license: dict = Depends(require_valid_license),
+):
     ensure_active_user(db, body.username)
     try:
         outcome = await generate_character_asset(
@@ -202,6 +323,7 @@ async def generate_character(body: CharacterGenerateRequest, db: Session = Depen
             action=body.action,
             node_id=body.node_id,
             resolution=body.resolution,
+            steps=body.steps,
             extra=body.extra,
             view_type=body.view_type,
         )
@@ -211,7 +333,11 @@ async def generate_character(body: CharacterGenerateRequest, db: Session = Depen
 
 
 @assets_router.post("/scene/generate")
-async def generate_scene(body: SceneGenerateRequest, db: Session = Depends(get_db)):
+async def generate_scene(
+    body: SceneGenerateRequest,
+    db: Session = Depends(get_db),
+    _license: dict = Depends(require_valid_license),
+):
     ensure_active_user(db, body.username)
     try:
         outcome = await generate_scene_asset(
@@ -222,6 +348,7 @@ async def generate_scene(body: SceneGenerateRequest, db: Session = Depends(get_d
             username=body.username,
             node_id=body.node_id,
             resolution=body.resolution,
+            steps=body.steps,
             extra=body.extra,
         )
         return _outcome_view(outcome)
@@ -230,7 +357,11 @@ async def generate_scene(body: SceneGenerateRequest, db: Session = Depends(get_d
 
 
 @assets_router.post("/prop/generate")
-async def generate_prop(body: PropGenerateRequest, db: Session = Depends(get_db)):
+async def generate_prop(
+    body: PropGenerateRequest,
+    db: Session = Depends(get_db),
+    _license: dict = Depends(require_valid_license),
+):
     ensure_active_user(db, body.username)
     try:
         outcome = await generate_prop_asset(
@@ -241,6 +372,7 @@ async def generate_prop(body: PropGenerateRequest, db: Session = Depends(get_db)
             username=body.username,
             node_id=body.node_id,
             resolution=body.resolution,
+            steps=body.steps,
             extra=body.extra,
         )
         return _outcome_view(outcome)

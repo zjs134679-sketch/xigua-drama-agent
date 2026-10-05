@@ -1,0 +1,49 @@
+西瓜短剧 Agent（Xigua Drama Agent）
+Copyright (c) 2026 西瓜短剧 Agent
+
+本发行版包含下列第三方组件（许可以其上游仓库为准，版本以本项目依赖锁定为准）：
+
+--------------------------------------------------------------------
+后端（Python，见 backend/requirements.txt 等）
+--------------------------------------------------------------------
+  FastAPI              — MIT
+  Uvicorn              — BSD-3-Clause
+  SQLAlchemy           — MIT
+  Pydantic / pydantic-settings — MIT
+  HTTPX                — BSD-3-Clause
+  python-multipart     — Apache-2.0
+  edge-tts             — MIT
+  pypinyin             — MIT
+  pytest               — MIT
+
+--------------------------------------------------------------------
+前端（Node，见 frontend/package.json / package-lock.json）
+--------------------------------------------------------------------
+  React / React DOM    — MIT
+  Vite                 — MIT
+  TypeScript           — Apache-2.0
+  Lucide React         — ISC
+
+--------------------------------------------------------------------
+桌面壳（见 src-tauri/）
+--------------------------------------------------------------------
+  Tauri 及相关 Rust crate — 以各自 crate 许可为准（多为 MIT/Apache-2.0）
+
+--------------------------------------------------------------------
+运行时可选外部能力（不随本仓库分发完整权重时）
+--------------------------------------------------------------------
+  ComfyUI 工作流 JSON（backend/app/workflows/）— 结构自维护；
+  实际模型权重（如 Flux / Wan / LTX 等）须遵守各模型提供方许可，
+  不因本软件附带工作流而获得模型商用权。
+
+--------------------------------------------------------------------
+自有内容声明
+--------------------------------------------------------------------
+  data/skills/art_styles/**           — 西瓜原创画风技能包（xg_*）
+  data/skills/story_types/**          — 西瓜故事类型技能
+  backend/app/services/agents/skills/** — 西瓜原创 Agent 技能（xg_*）
+
+本项目不包含 Toonflow（HBAI-Ltd）或火宝短剧（chatfire-AI/huobao-drama）
+的技能正文；产品流程上的行业通用能力不构成对上述项目的代码许可依赖。
+
+如发现 NOTICE 遗漏的第三方声明，请提交 Issue 以便补全。

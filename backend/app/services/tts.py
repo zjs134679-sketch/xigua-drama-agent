@@ -176,11 +176,58 @@ async def synthesize_storyboard_tts(
         if ch is None or ch.deleted_at is not None or (ep and ch.drama_id != ep.drama_id):
             raise TTSError("绑定的说话角色无效，请重新选择")
         if not ch.voice_style:
-            raise TTSError(f"角色“{ch.name}”尚未绑定音色")
+            raise TTSError(f"角色“{ch.name}”尚未绑定音色，请到「角色资产」一键绑定音频")
         forced_voice = edge_voice_for_style(ch.voice_style)
+    else:
+        # 未指定说话人：拆镜时尽量自动填；这里再补一次
+        try:
+            from app.services.storyboard_references import resolve_speaking_character_id, sync_storyboard_characters
+
+            cast = sync_storyboard_characters(db, sb)
+            sid = resolve_speaking_character_id(db, sb, cast)
+            if sid is not None:
+                sb.speaking_character_id = sid
+                ch = db.get(Character, sid)
+                if ch and ch.voice_style:
+                    forced_voice = edge_voice_for_style(ch.voice_style)
+                elif ch and not ch.voice_style:
+                    raise TTSError(f"角色“{ch.name}”尚未绑定音色，请到「角色资产」一键绑定音频")
+                db.commit()
+        except TTSError:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
     lines = _parse_lines(dialogue)
     if not lines:
         raise TTSError("台词为空")
+
+    # 多说话人：检查出现的角色是否都有音色
+    if not forced_voice and ep is not None:
+        missing: list[str] = []
+        for speaker, _text in lines:
+            if not speaker:
+                continue
+            if speaker not in vmap or not vmap.get(speaker):
+                # vmap 用默认，但角色库里无绑时提醒
+                ch_hit = next(
+                    (
+                        c
+                        for c in db.scalars(
+                            select(Character).where(
+                                Character.drama_id == ep.drama_id,
+                                Character.deleted_at.is_(None),
+                            )
+                        ).all()
+                        if c.name == speaker
+                    ),
+                    None,
+                )
+                if ch_hit is not None and not (ch_hit.voice_style or "").strip():
+                    missing.append(speaker)
+        if missing:
+            raise TTSError(
+                "以下说话人未绑定音色：" + "、".join(dict.fromkeys(missing)) + "。请到「角色资产」一键绑定音频"
+            )
 
     oss = settings.data_dir / "oss"
     oss.mkdir(parents=True, exist_ok=True)

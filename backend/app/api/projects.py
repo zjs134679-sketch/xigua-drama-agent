@@ -8,24 +8,40 @@ from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
-from app.models.domain import AiVoice, Character, Drama, Episode, Prop, Scene
+from app.models.domain import (
+    Character,
+    Drama,
+    Episode,
+    EpisodeCharacter,
+    EpisodeScene,
+    Prop,
+    Scene,
+    Storyboard,
+    StoryboardCharacter,
+)
 from app.schemas.project import (
     AssetPromptUpdate,
     DramaCreate,
     EpisodeCreate,
     NovelImportRequest,
-    VoiceBindingRequest,
+    StyleBibleIn,
 )
 from app.services.asset_generation import build_character_prompt
 from app.services.compliance import check, enforce
 from app.services.novel_split import split_novel
 from app.services.project_deletion import delete_project
-from app.services.voice_assignment import assign_character_voices
-
+from app.services.style_composer import (
+    StyleConflictError,
+    drama_bible,
+    save_bible,
+    validate_bible_dict,
+)
+from app.services.style_contract import list_pacing_profiles, list_story_types
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 def drama_view(d: Drama) -> dict:
+    bible = drama_bible(d)
     return {
         "id": d.id,
         "title": d.title,
@@ -34,6 +50,9 @@ def drama_view(d: Drama) -> dict:
         "style": d.style,
         "status": d.status,
         "total_episodes": d.total_episodes,
+        "has_director_manual": bool(getattr(d, "director_manual", None)),
+        "has_visual_manual": bool(getattr(d, "visual_manual", None)),
+        "style_bible": bible or None,
     }
 
 
@@ -55,9 +74,71 @@ def episode_view(e: Episode, with_content: bool = False) -> dict:
 
 @router.post("")
 def create_drama(body: DramaCreate, db: Session = Depends(get_db)) -> dict:
-    d = Drama(title=body.title, description=body.description, genre=body.genre, style=body.style)
+    d = Drama(
+        title=body.title,
+        description=body.description,
+        genre=body.genre or body.narrative_tag,
+        style=body.style,
+    )
+    raw_bible = {
+        "version": 1,
+        "art_style_id": body.art_style_id,
+        "narrative_tag": body.narrative_tag or body.genre,
+        "pacing_profile": body.pacing_profile or "pace_balanced",
+        "aspect": body.aspect or "9:16",
+    }
+    try:
+        bible = validate_bible_dict(raw_bible, db)
+    except StyleConflictError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # 同步显示名到 style 字段便于旧 UI
+    if bible.get("visual_name"):
+        d.style = str(bible["visual_name"])
+    if bible.get("narrative_tag"):
+        d.genre = str(bible["narrative_tag"])
+    save_bible(d, bible)
     db.add(d)
     db.commit()
+    db.refresh(d)
+    return drama_view(d)
+
+
+@router.get("/style-options")
+def style_options() -> dict:
+    """节奏取向 + 故事类型目录（建项用）。"""
+    return {
+        "pacing_profiles": list_pacing_profiles(),
+        "story_types": list_story_types(),
+        "aspect_options": ["9:16", "16:9"],
+    }
+
+
+@router.get("/{drama_id}/style-bible")
+def get_style_bible(drama_id: int, db: Session = Depends(get_db)) -> dict:
+    d = db.get(Drama, drama_id)
+    if not d or d.deleted_at is not None:
+        raise HTTPException(404, "项目不存在")
+    bible = drama_bible(d)
+    return {"drama_id": drama_id, "style_bible": bible}
+
+
+@router.put("/{drama_id}/style-bible")
+def put_style_bible(drama_id: int, body: StyleBibleIn, db: Session = Depends(get_db)) -> dict:
+    d = db.get(Drama, drama_id)
+    if not d or d.deleted_at is not None:
+        raise HTTPException(404, "项目不存在")
+    merged = {**drama_bible(d), **body.model_dump(exclude_unset=True)}
+    try:
+        bible = validate_bible_dict(merged, db)
+    except StyleConflictError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    save_bible(d, bible)
+    if bible.get("visual_name"):
+        d.style = str(bible["visual_name"])
+    if bible.get("narrative_tag"):
+        d.genre = str(bible["narrative_tag"])
+    db.commit()
+    db.refresh(d)
     return drama_view(d)
 
 
@@ -175,17 +256,51 @@ def get_episode(episode_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/{drama_id}/characters")
-def list_characters(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    rows = db.scalars(
-        select(Character).where(Character.drama_id == drama_id, Character.deleted_at.is_(None)).order_by(Character.id)
-    ).all()
+def list_characters(
+    drama_id: int,
+    episode_id: int | None = None,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """列出角色。传 episode_id 时只返回本集相关（分集关联 ∪ 分镜出镜），供流水线标绿。"""
+    q = select(Character).where(Character.drama_id == drama_id, Character.deleted_at.is_(None))
+    if episode_id is not None:
+        ep = db.get(Episode, episode_id)
+        if ep is None or ep.deleted_at is not None or ep.drama_id != drama_id:
+            raise HTTPException(404, "分集不存在或不属于该项目")
+        linked = set(
+            db.scalars(
+                select(EpisodeCharacter.character_id).where(EpisodeCharacter.episode_id == episode_id)
+            ).all()
+        )
+        # 分镜表里实际出镜的角色也算本集需要
+        sb_ids = list(
+            db.scalars(
+                select(Storyboard.id).where(
+                    Storyboard.episode_id == episode_id, Storyboard.deleted_at.is_(None)
+                )
+            ).all()
+        )
+        if sb_ids:
+            linked |= set(
+                db.scalars(
+                    select(StoryboardCharacter.character_id).where(
+                        StoryboardCharacter.storyboard_id.in_(sb_ids)
+                    )
+                ).all()
+            )
+        if linked:
+            q = q.where(Character.id.in_(linked))
+        else:
+            # 本集尚未关联任何角色：返回空，避免用全剧龙套卡住流水线
+            return []
+    rows = db.scalars(q.order_by(Character.id)).all()
     return [
         {"id": c.id, "name": c.name, "role": c.role, "appearance": c.appearance,
          "personality": c.personality, "description": c.description, "image_url": c.image_url,
          "voice_id": c.voice_style, "voice_provider": c.voice_provider,
-         "view_type": c.view_type or "full_body",
+         "view_type": c.view_type or "turnaround_head",
          # 可编辑出图提示词：已存优先，否则给一个可改的自动建议
-         "image_prompt": c.image_prompt or build_character_prompt(c, None, None, view_type=c.view_type or "full_body")}
+         "image_prompt": c.image_prompt or build_character_prompt(c, None, None, view_type=c.view_type or "turnaround_head")}
         for c in rows
     ]
 
@@ -201,42 +316,45 @@ def update_character_prompt(character_id: int, body: AssetPromptUpdate, db: Sess
 
 
 @router.patch("/characters/{character_id}/voice")
-def update_character_voice(character_id: int, body: VoiceBindingRequest, db: Session = Depends(get_db)) -> dict:
-    character = db.get(Character, character_id)
-    if character is None or character.deleted_at is not None:
-        raise HTTPException(404, "角色不存在")
-    voice = db.scalars(
-        select(AiVoice).where(AiVoice.voice_id == body.voice_id, AiVoice.provider == body.voice_provider)
-    ).first()
-    if voice is None:
-        raise HTTPException(404, "音色不存在")
-    character.voice_style = voice.voice_id
-    character.voice_provider = voice.provider
-    db.commit()
-    return {
-        "id": character.id,
-        "voice_id": character.voice_style,
-        "voice_provider": character.voice_provider,
-    }
+def update_character_voice_removed(character_id: int):
+    raise HTTPException(410, "已取消独立音色/TTS。对白在「定稿出片」时由视频模型生成语音。")
 
 
 @router.post("/{drama_id}/assign-voices")
-def assign_voices(drama_id: int, db: Session = Depends(get_db)) -> dict:
-    drama = db.get(Drama, drama_id)
-    if drama is None or drama.deleted_at is not None:
-        raise HTTPException(404, "项目不存在")
-    try:
-        assignments = assign_character_voices(db, drama_id)
-    except LookupError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return {"drama_id": drama_id, "assignments": assignments}
+def assign_voices_removed(drama_id: int):
+    raise HTTPException(410, "已取消一键绑定音色。请直接出图后定稿出片，模型生成语音。")
 
 
 @router.get("/{drama_id}/scenes")
-def list_scenes(drama_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    rows = db.scalars(
-        select(Scene).where(Scene.drama_id == drama_id, Scene.deleted_at.is_(None)).order_by(Scene.id)
-    ).all()
+def list_scenes(
+    drama_id: int,
+    episode_id: int | None = None,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """列出场景。传 episode_id 时只返回本集相关（分集关联 ∪ 分镜用到的场景）。"""
+    q = select(Scene).where(Scene.drama_id == drama_id, Scene.deleted_at.is_(None))
+    if episode_id is not None:
+        ep = db.get(Episode, episode_id)
+        if ep is None or ep.deleted_at is not None or ep.drama_id != drama_id:
+            raise HTTPException(404, "分集不存在或不属于该项目")
+        linked = set(
+            db.scalars(select(EpisodeScene.scene_id).where(EpisodeScene.episode_id == episode_id)).all()
+        )
+        used = set(
+            db.scalars(
+                select(Storyboard.scene_id).where(
+                    Storyboard.episode_id == episode_id,
+                    Storyboard.deleted_at.is_(None),
+                    Storyboard.scene_id.is_not(None),
+                )
+            ).all()
+        )
+        linked |= {int(x) for x in used if x is not None}
+        if linked:
+            q = q.where(Scene.id.in_(linked))
+        else:
+            return []
+    rows = db.scalars(q.order_by(Scene.id)).all()
     return [
         {"id": s.id, "location": s.location, "time": s.time, "prompt": s.prompt,
          "status": s.status, "image_url": s.image_url}

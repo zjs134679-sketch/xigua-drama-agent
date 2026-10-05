@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -16,11 +18,98 @@ from app.core.db import get_db
 from app.models.domain import Asset, Episode, Storyboard, VideoMerge
 from app.services.compliance import check
 from app.services.compliance.enforce import record_violation
-from app.services.tts import TTSError, TTSComplianceBlocked, synthesize_episode_tts, synthesize_storyboard_tts
 from app.services.video_compose import FfmpegNotFoundError, VideoComposeError, compose_video
 
 router = APIRouter(prefix="/timeline", tags=["timeline"])
 TrackName = Literal["video", "voiceover", "subtitle", "music"]
+
+# 与本地 ComfyUI 单镜图生视频上限一致
+CLIP_MAX_DURATION = 5.0
+
+
+def _clamp_clip_duration(value: float | int | None) -> float:
+    try:
+        raw = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if raw <= 0:
+        return 0.0
+    return min(raw, CLIP_MAX_DURATION)
+
+
+def _oss_exists(name: str) -> bool:
+    path = (settings.data_dir / "oss" / Path(name).name).resolve()
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def normalize_media_url(url: str | None) -> str | None:
+    """把 ComfyUI /view 直链转成可播放的 /oss/ 路径。
+
+    - `/oss/xxx` 且文件存在 → 保留
+    - `/oss/xxx` 文件缺失 → None（避免前端 404 黑屏）
+    - ComfyUI view 链 → 若本地 oss 有同名文件则改写
+    - 其它相对路径（测试/外部）原样返回
+    """
+    if not url or not str(url).strip():
+        return None
+    text = str(url).strip()
+    if text.startswith("/oss/"):
+        name = Path(text).name
+        return f"/oss/{name}" if _oss_exists(name) else None
+    # ComfyUI: http://127.0.0.1:8188/view?filename=xigua_i2v_00005_.mp4&...
+    if "filename=" in text and ("/view" in text or "8188" in text):
+        try:
+            qs = parse_qs(urlparse(text).query)
+            name = (qs.get("filename") or [None])[0]
+            if name and _oss_exists(name):
+                return f"/oss/{Path(name).name}"
+            # Comfy 直链在浏览器常因跨域/未开机失败；无本地副本则清空
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+    # 绝对本地路径 → 若落在 oss 目录则改写
+    try:
+        path = Path(text)
+        if path.is_file():
+            oss_root = (settings.data_dir / "oss").resolve()
+            resolved = path.resolve()
+            if oss_root in resolved.parents or resolved.parent == oss_root:
+                return f"/oss/{resolved.name}"
+    except OSError:
+        pass
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    # 测试占位或相对路径：原样保留
+    return text
+
+
+def _refresh_clip_from_storyboard(clip: TimelineClip, sb: Storyboard) -> TimelineClip:
+    """用分镜表最新素材覆盖缓存时间线里的媒体字段（解决「已出视频但成片台空白」）。"""
+    video = normalize_media_url(sb.composed_video_url or sb.video_url)
+    thumb = normalize_media_url(sb.first_frame_image or sb.composed_image or sb.last_frame_image)
+    # 不再使用 tts_audio_url；模型语音在 video 文件内
+    clip.video_url = video
+    clip.thumbnail = thumb
+    clip.audio_url = None
+    if sb.dialogue is not None and (clip.subtitle_text is None or clip.subtitle_text == ""):
+        clip.subtitle_text = sb.dialogue
+    if sb.segment_total and sb.segment_total >= 2:
+        clip.segment_key = sb.segment_key
+        clip.segment_title = sb.segment_title
+        clip.segment_part = sb.segment_part
+        clip.segment_total = sb.segment_total
+    else:
+        clip.segment_key = None
+        clip.segment_title = None
+        clip.segment_part = None
+        clip.segment_total = None
+    clip.trim_in = getattr(sb, "trim_in", None)
+    clip.trim_out = getattr(sb, "trim_out", None)
+    clip.selected_video_id = getattr(sb, "selected_video_id", None)
+    return clip
 
 
 class TimelineClip(BaseModel):
@@ -33,6 +122,13 @@ class TimelineClip(BaseModel):
     subtitle_text: str | None = None
     subtitle_url: str | None = None
     thumbnail: str | None = None
+    segment_key: str | None = None
+    segment_title: str | None = None
+    segment_part: int | None = None
+    segment_total: int | None = None
+    trim_in: float | None = None
+    trim_out: float | None = None
+    selected_video_id: int | None = None
 
 
 class TimelineTrack(BaseModel):
@@ -59,6 +155,8 @@ class TimelineSaveRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     username: str | None = None
+    # 异步入队（长成片推荐）；默认 false 保持同步返回
+    async_mode: bool = False
 
 
 class TTSRequest(BaseModel):
@@ -66,11 +164,11 @@ class TTSRequest(BaseModel):
 
 
 def _latest_merge(db: Session, episode_id: int) -> VideoMerge | None:
+    """取最新时间线草稿（兼容 timeline / easy_pipeline 等 provider）。"""
     return db.scalars(
         select(VideoMerge)
         .where(
             VideoMerge.episode_id == episode_id,
-            VideoMerge.provider == "timeline",
             VideoMerge.deleted_at.is_(None),
         )
         .order_by(VideoMerge.id.desc())
@@ -78,23 +176,28 @@ def _latest_merge(db: Session, episode_id: int) -> VideoMerge | None:
 
 
 def _clip_from_storyboard(row: Storyboard, index: int, start: float) -> TimelineClip:
-    return TimelineClip(
+    clip = TimelineClip(
         storyboard_id=row.id,
         index=index,
         start=start,
-        duration=max(float(row.duration or 0), 0),
-        video_url=row.composed_video_url or row.video_url,
-        audio_url=row.tts_audio_url,
+        duration=_clamp_clip_duration(row.duration),
+        video_url=None,
+        audio_url=None,
         subtitle_text=row.dialogue,
         subtitle_url=row.subtitle_url,
-        thumbnail=row.first_frame_image or row.composed_image,
+        thumbnail=None,
     )
+    return _refresh_clip_from_storyboard(clip, row)
 
 
 def build_timeline(db: Session, episode_id: int) -> TimelineDocument:
     episode = db.get(Episode, episode_id)
     if episode is None or episode.deleted_at is not None:
         raise HTTPException(404, "分集不存在")
+
+    from app.services.storyboard_segments import refresh_episode_segments
+
+    refresh_episode_segments(db, episode_id, commit=True)
 
     rows = db.scalars(
         select(Storyboard)
@@ -149,6 +252,66 @@ def build_timeline(db: Session, episode_id: int) -> TimelineDocument:
     )
 
 
+def _reconcile_timeline_with_storyboards(db: Session, episode_id: int, document: TimelineDocument) -> TimelineDocument:
+    """缓存时间线与分镜表对齐：补上拆镜新增的镜头、去掉已删镜头，按镜号排序。
+
+    否则会出现「分镜 18 条各 5s，成片台还停在旧的 10 条/甚至看起来像只有 5s」。
+    """
+    boards = list(
+        db.scalars(
+            select(Storyboard)
+            .where(Storyboard.episode_id == episode_id, Storyboard.deleted_at.is_(None))
+            .order_by(Storyboard.storyboard_number, Storyboard.id)
+        ).all()
+    )
+    board_ids = {row.id for row in boards}
+    by_clip: dict[int, TimelineClip] = {}
+    for clip in document.tracks.video.clips:
+        if clip.storyboard_id is not None and int(clip.storyboard_id) in board_ids:
+            by_clip[int(clip.storyboard_id)] = clip.model_copy(deep=True)
+
+    video_clips: list[TimelineClip] = []
+    start = 0.0
+    for index, row in enumerate(boards):
+        existing = by_clip.get(row.id)
+        if existing is not None:
+            clip = existing
+            clip.index = index
+            clip.start = start
+            # 时长以分镜为准（钳到 5s），保留 trim / selected_video
+            if row.duration and row.duration > 0:
+                clip.duration = _clamp_clip_duration(float(row.duration))
+            else:
+                clip.duration = _clamp_clip_duration(clip.duration)
+            _refresh_clip_from_storyboard(clip, row)
+        else:
+            clip = _clip_from_storyboard(row, index, start)
+        video_clips.append(clip)
+        start += clip.duration
+
+    # 旁白/字幕：按视频轨重建，媒体从 clip 同步
+    voice_clips = [clip.model_copy(deep=True) for clip in video_clips if clip.audio_url]
+    subtitle_clips = [
+        clip.model_copy(deep=True) for clip in video_clips if clip.subtitle_text or clip.subtitle_url
+    ]
+    music = document.tracks.music.model_copy(deep=True)
+    for clip in music.clips:
+        # 音乐轨总长跟成片对齐
+        if music.clips and clip is music.clips[0]:
+            clip.duration = start
+
+    return TimelineDocument(
+        episode_id=episode_id,
+        duration=start,
+        tracks=TimelineTracks(
+            video=TimelineTrack(enabled=True, clips=video_clips),
+            voiceover=TimelineTrack(enabled=bool(voice_clips), clips=voice_clips),
+            subtitle=TimelineTrack(enabled=bool(subtitle_clips), clips=subtitle_clips),
+            music=music,
+        ),
+    )
+
+
 def get_timeline_document(db: Session, episode_id: int) -> TimelineDocument:
     episode = db.get(Episode, episode_id)
     if episode is None or episode.deleted_at is not None:
@@ -156,10 +319,100 @@ def get_timeline_document(db: Session, episode_id: int) -> TimelineDocument:
     merge = _latest_merge(db, episode_id)
     if merge and merge.scenes:
         try:
-            return TimelineDocument.model_validate(json.loads(merge.scenes))
-        except (json.JSONDecodeError, ValueError, TypeError):
+            raw = TimelineDocument.model_validate(json.loads(merge.scenes))
+            document = _normalise_timeline(db, episode_id, raw.tracks)
+            # 始终用分镜表最新 video/缩略图/配音覆盖缓存（出片后不必重存时间线）
+            document = _hydrate_timeline_media(db, document)
+            # 拆镜/删镜后：与分镜表全量对齐（补新镜、去旧镜）
+            before_sig = _timeline_structure_signature(document)
+            document = _reconcile_timeline_with_storyboards(db, episode_id, document)
+            after_sig = _timeline_structure_signature(document)
+            # 时长钳制或结构/媒体有更新时写回缓存
+            needs_clamp = any(
+                float(c.duration or 0) > CLIP_MAX_DURATION for c in raw.tracks.video.clips
+            )
+            media_changed = _timeline_media_signature(raw) != _timeline_media_signature(document)
+            structure_changed = before_sig != after_sig or len(raw.tracks.video.clips) != len(
+                document.tracks.video.clips
+            )
+            if needs_clamp or media_changed or structure_changed:
+                for clip in document.tracks.video.clips:
+                    if clip.storyboard_id is None:
+                        continue
+                    sb = db.get(Storyboard, clip.storyboard_id)
+                    if sb is not None and (not sb.duration or sb.duration > CLIP_MAX_DURATION):
+                        sb.duration = int(round(clip.duration)) or 5
+                _store_timeline(db, document)
+            return document
+        except (json.JSONDecodeError, ValueError, TypeError, HTTPException):
             pass
     return build_timeline(db, episode_id)
+
+
+def _timeline_structure_signature(doc: TimelineDocument) -> tuple:
+    return tuple(
+        (c.storyboard_id, round(float(c.duration or 0), 3), c.segment_key, c.segment_part)
+        for c in doc.tracks.video.clips
+    )
+
+
+def _timeline_media_signature(doc: TimelineDocument) -> tuple:
+    return tuple(
+        (
+            c.storyboard_id,
+            c.video_url,
+            c.thumbnail,
+            c.audio_url,
+            round(float(c.duration or 0), 3),
+        )
+        for c in doc.tracks.video.clips
+    )
+
+
+def _hydrate_timeline_media(db: Session, document: TimelineDocument) -> TimelineDocument:
+    """从 storyboards 回填最新视频/图/配音，避免缓存 scenes 缺 video_url。"""
+    ids = [c.storyboard_id for c in document.tracks.video.clips if c.storyboard_id is not None]
+    if not ids:
+        return document
+    rows = {
+        row.id: row
+        for row in db.scalars(select(Storyboard).where(Storyboard.id.in_(ids))).all()
+    }
+    video = document.tracks.video.model_copy(deep=True)
+    for clip in video.clips:
+        sb = rows.get(int(clip.storyboard_id)) if clip.storyboard_id is not None else None
+        if sb is not None:
+            _refresh_clip_from_storyboard(clip, sb)
+
+    def sync_media(track: TimelineTrack, field: str) -> TimelineTrack:
+        synced = track.model_copy(deep=True)
+        by_id = {int(c.storyboard_id): c for c in synced.clips if c.storyboard_id is not None}
+        for clip in video.clips:
+            if clip.storyboard_id is None:
+                continue
+            other = by_id.get(int(clip.storyboard_id))
+            if other is None:
+                continue
+            if field == "audio":
+                other.audio_url = clip.audio_url
+            elif field == "subtitle":
+                if clip.subtitle_text:
+                    other.subtitle_text = clip.subtitle_text
+            other.duration = clip.duration
+            other.start = clip.start
+            other.index = clip.index
+        return synced
+
+    return TimelineDocument(
+        episode_id=document.episode_id,
+        duration=document.duration,
+        tracks=TimelineTracks(
+            video=video,
+            voiceover=sync_media(document.tracks.voiceover, "audio"),
+            subtitle=sync_media(document.tracks.subtitle, "subtitle"),
+            music=document.tracks.music,
+        ),
+    )
 
 
 def _normalise_timeline(db: Session, episode_id: int, tracks: TimelineTracks) -> TimelineDocument:
@@ -183,7 +436,7 @@ def _normalise_timeline(db: Session, episode_id: int, tracks: TimelineTracks) ->
     for index, clip in enumerate(video.clips):
         clip.index = index
         clip.start = start
-        clip.duration = max(float(clip.duration), 0)
+        clip.duration = _clamp_clip_duration(clip.duration)
         timing[int(clip.storyboard_id)] = (index, start, clip.duration)
         start += clip.duration
 
@@ -279,13 +532,13 @@ def save_timeline(episode_id: int, body: TimelineSaveRequest, db: Session = Depe
     return document.model_dump(mode="json")
 
 
-@router.post("/{episode_id}/export")
-def export_timeline(
+def run_timeline_export(
+    db: Session,
     episode_id: int,
-    body: ExportRequest | None = None,
-    db: Session = Depends(get_db),
-):
-    ensure_active_user(db, body.username if body else None)
+    *,
+    username: str | None = None,
+) -> dict:
+    """同步导出成片（应用 trim_in/out）。供 API 与任务队列共用。"""
     document = get_timeline_document(db, episode_id)
     checked: set[tuple[int | None, str]] = set()
     for track_name in ("video", "voiceover", "subtitle", "music"):
@@ -300,22 +553,20 @@ def export_timeline(
             if result.blocked:
                 enforcement = record_violation(
                     db,
-                    body.username if body else None,
+                    username,
                     result,
                     "timeline_subtitle",
                 )
-                return JSONResponse(
-                    status_code=451,
-                    content={
-                        "status": "blocked",
-                        "blocked": True,
-                        "storyboard_id": clip.storyboard_id,
-                        "clip_index": clip.index,
-                        "violation_count": enforcement["violation_count"],
-                        "banned": enforcement["banned"],
-                        "error": "字幕内容触发红线，已拦截并记录",
-                    },
-                )
+                return {
+                    "status": "blocked",
+                    "blocked": True,
+                    "storyboard_id": clip.storyboard_id,
+                    "clip_index": clip.index,
+                    "violation_count": enforcement["violation_count"],
+                    "banned": enforcement["banned"],
+                    "error": "字幕内容触发红线，已拦截并记录",
+                    "http_status": 451,
+                }
 
     merge = _latest_merge(db, episode_id)
     if merge is None:
@@ -324,18 +575,43 @@ def export_timeline(
     merge.error_msg = None
     db.commit()
 
+    oss_dir = settings.data_dir / "oss"
+    timeline_payload = document.model_dump(mode="json")
+    # 从已存 scenes 读转场/配乐偏好（一键出片写入；手工导出默认真淡入）
+    if merge and merge.scenes:
+        try:
+            raw_scenes = json.loads(merge.scenes)
+            if isinstance(raw_scenes, dict):
+                if raw_scenes.get("transition"):
+                    timeline_payload["transition"] = raw_scenes["transition"]
+                if raw_scenes.get("transition_duration") is not None:
+                    timeline_payload["transition_duration"] = raw_scenes["transition_duration"]
+                # 若当前文档音乐轨空，但缓存里有 music，则带上
+                music_raw = (raw_scenes.get("tracks") or {}).get("music") or {}
+                if music_raw.get("clips") and not timeline_payload["tracks"]["music"]["clips"]:
+                    timeline_payload["tracks"]["music"] = music_raw
+        except (json.JSONDecodeError, TypeError, KeyError):
+            pass
+    if "transition" not in timeline_payload:
+        timeline_payload["transition"] = "fade"
+        timeline_payload["transition_duration"] = 0.35
+
     try:
-        result = compose_video(document.model_dump(mode="json"), settings.data_dir / "oss")
+        result = compose_video(
+            timeline_payload,
+            oss_dir,
+            oss_dir=oss_dir,
+        )
     except FfmpegNotFoundError as exc:
         merge.status = "failed"
         merge.error_msg = str(exc)
         db.commit()
-        return JSONResponse(status_code=503, content={"status": "failed", "merged_url": None, "error": str(exc)})
+        return {"status": "failed", "merged_url": None, "error": str(exc), "http_status": 503}
     except VideoComposeError as exc:
         merge.status = "failed"
         merge.error_msg = str(exc)
         db.commit()
-        return JSONResponse(status_code=502, content={"status": "failed", "merged_url": None, "error": str(exc)})
+        return {"status": "failed", "merged_url": None, "error": str(exc), "http_status": 502}
 
     merged_url = f"/oss/{result.output_path.name}"
     merge.status = "completed"
@@ -344,66 +620,61 @@ def export_timeline(
     merge.error_msg = None
     merge.completed_at = datetime.utcnow()
     episode = db.get(Episode, episode_id)
-    episode.video_url = merged_url
-    episode.duration = round(result.duration)
+    if episode is not None:
+        episode.video_url = merged_url
+        episode.duration = round(result.duration)
     db.commit()
-    return {"status": "completed", "merged_url": merged_url, "error": None, "duration": result.duration}
+    return {
+        "status": "completed",
+        "merged_url": merged_url,
+        "error": None,
+        "duration": result.duration,
+        "http_status": 200,
+    }
+
+
+@router.post("/{episode_id}/export")
+def export_timeline(
+    episode_id: int,
+    body: ExportRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    username = body.username if body else None
+    ensure_active_user(db, username)
+    if body and body.async_mode:
+        from app.services.jobs import enqueue_job, job_view
+
+        ep = db.get(Episode, episode_id)
+        job = enqueue_job(
+            db,
+            job_type="export_timeline",
+            payload={"episode_id": episode_id, "username": username},
+            drama_id=ep.drama_id if ep else None,
+            episode_id=episode_id,
+            username=username,
+            message="导出成片",
+        )
+        return {"async": True, "status": "pending", "job": job_view(job)}
+
+    payload = run_timeline_export(db, episode_id, username=username)
+    http_status = int(payload.pop("http_status", 200))
+    if http_status != 200:
+        return JSONResponse(status_code=http_status, content=payload)
+    return payload
 
 
 @router.post("/storyboards/{storyboard_id}/tts")
-async def generate_storyboard_tts(
-    storyboard_id: int,
-    body: TTSRequest | None = None,
-    db: Session = Depends(get_db),
-):
-    """Generate voice for one selected storyboard only."""
-    storyboard = db.get(Storyboard, storyboard_id)
-    if storyboard is None or storyboard.deleted_at is not None:
-        raise HTTPException(404, "分镜不存在")
-    if storyboard.speaking_character_id is None:
-        raise HTTPException(400, "请先选择说话角色")
-    username = body.username if body else None
-    ensure_active_user(db, username)
-    try:
-        row = await synthesize_storyboard_tts(db, storyboard_id=storyboard_id, username=username)
-    except TTSComplianceBlocked as exc:
-        return JSONResponse(
-            status_code=451,
-            content={
-                "blocked": True,
-                "banned": bool(exc.enforcement.get("banned")),
-                "message": "台词触发红线，配音已拦截",
-            },
-        )
-    except TTSError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    _refresh_generated_audio_tracks(db, storyboard.episode_id)
-    return {"storyboard_id": row.id, "status": "completed", "audio_url": row.tts_audio_url}
+def generate_storyboard_tts_removed(storyboard_id: int):
+    """已移除独立 TTS。语音由视频模型在「定稿出片」时直接生成。"""
+    raise HTTPException(
+        410,
+        "已取消独立配音。请直接「定稿出片」：台词会写入视频提示词，由视频模型生成语音。",
+    )
 
 
 @router.post("/{episode_id}/tts")
-async def generate_timeline_tts(
-    episode_id: int,
-    body: TTSRequest | None = None,
-    db: Session = Depends(get_db),
-):
-    """给这一集所有有台词的分镜生成真实配音（edge-tts），写回 tts_audio_url，
-    并刷新已存时间线的配音/字幕轨，让导出能直接用上。"""
-    if db.get(Episode, episode_id) is None:
-        raise HTTPException(404, "分集不存在")
-    username = body.username if body else None
-    ensure_active_user(db, username)
-
-    results = await synthesize_episode_tts(db, episode_id=episode_id, username=username)
-
-    # 已存了时间线 → 用最新分镜重建配音/字幕轨，保留视频/音乐轨的人工编辑
-    _refresh_generated_audio_tracks(db, episode_id)
-
-    completed = sum(1 for r in results if r["status"] == "completed")
-    return {
-        "results": results,
-        "completed": completed,
-        "total": len(results),
-        "blocked": any(r["status"] == "blocked" for r in results),
-        "banned": any(r.get("banned") for r in results),
-    }
+def generate_timeline_tts_removed(episode_id: int):
+    raise HTTPException(
+        410,
+        "已取消独立配音。请对分镜批量「定稿出片」，模型会直接生成带语音的镜头。",
+    )

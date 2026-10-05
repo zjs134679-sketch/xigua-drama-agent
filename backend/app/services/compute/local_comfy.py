@@ -43,9 +43,122 @@ class LocalComfyNode(ComputeNode):
         except Exception:
             return False
 
+    # 已废弃工作流名 → 当前唯一启用的 Turbo 模板
+    _LEGACY_WORKFLOW_MAP = {
+        "flux-t2i.api.json": "minimax-h3-t2i.api.json",
+        "flux-t2i-gguf.legacy.api.json": "minimax-h3-t2i.api.json",
+        "flux2-klein-triref.api.json": "minimax-h3-t2i.api.json",
+        "kontext-multiref.api.json": "minimax-h3-t2i.api.json",
+        "minimax-h3-i2v.api.json": "minimax-h3-r2v.api.json",
+        "ltx23-i2v.api.json": "minimax-h3-r2v.api.json",
+        "vid2vid.api.json": "minimax-h3-r2v.api.json",
+    }
+
+    @classmethod
+    def _canonical_workflow(cls, name: str | None, *, kind: str = "image") -> str:
+        """旧工作流名一律映射到唯一启用的两套：t2i / r2v。"""
+        raw = (name or "").strip()
+        mapped = cls._LEGACY_WORKFLOW_MAP.get(raw, raw) if raw else ""
+        if raw and mapped != raw:
+            logger.info("废弃工作流 %s → %s", raw, mapped)
+        if kind == "video":
+            return "minimax-h3-r2v.api.json"
+        return "minimax-h3-t2i.api.json"
+
     def _load_workflow(self, name: str) -> dict:
         path: Path = settings.workflows_dir / name
+        if not path.is_file():
+            # 兼容仍指向已归档文件名的配置
+            alt = self._LEGACY_WORKFLOW_MAP.get(name)
+            if alt:
+                path = settings.workflows_dir / alt
+                logger.warning("工作流 %s 已废弃，改用 %s", name, alt)
         return json.loads(path.read_text(encoding="utf-8-sig"))
+
+    # MiniMax H3 条件节点（官方 ReferenceToVideo / ImageToVideo + T8 AudioConditioning）
+    _MINIMAX_COND_TYPES = (
+        "MiniMaxH3ImageToVideo",
+        "MiniMaxH3ReferenceToVideo",
+        "MiniMaxH3AudioConditioningT8",
+    )
+    _MINIMAX_R2V_TYPES = (
+        "MiniMaxH3ReferenceToVideo",
+        "MiniMaxH3AudioConditioningT8",
+    )
+    _MINIMAX_STEP_TYPES = (
+        "BasicScheduler",
+        "MiniMaxH3DualClockSamplerT8",
+        "MiniMaxH3MultiRateSamplerEXPT8",
+    )
+
+    @staticmethod
+    def _has_turbo_lora(wf: dict) -> bool:
+        for node in wf.values():
+            if not isinstance(node, dict):
+                continue
+            if node.get("class_type") not in (
+                "LoraLoaderBypassModelOnly",
+                "LoraLoaderModelOnly",
+                "LoraLoader",
+            ):
+                continue
+            name = str((node.get("inputs") or {}).get("lora_name") or "").lower()
+            if "turbo" in name or "4步" in name or "4step" in name:
+                return True
+        return False
+
+    @staticmethod
+    def _non_pruned_unet_name(name: str) -> str:
+        """Turbo LoRA 需要 AdaLN 2688；pruned 基模 AdaLN=8，运行时会 mat1×mat2 崩溃。"""
+        if not name or "pruned" not in name.lower():
+            return name
+        # minimax_h3_fl2va_pruned_int8_convrot → minimax_h3_fl2va_int8_convrot
+        fixed = name.replace("_pruned_", "_").replace("pruned_", "").replace("_pruned", "")
+        return fixed
+
+    @staticmethod
+    def _ensure_turbo_compatible_base(wf: dict) -> None:
+        """挂载 Turbo 4 步 LoRA 时强制使用非 pruned 基模。
+
+        官方说明：pruned 把 AdaLN 压成 8 维，Turbo LoRA 仍按 2688 维训练；
+        Bypass 加载后会在 SamplerCustomAdvanced 报
+        mat1 and mat2 shapes cannot be multiplied (1x8 and 2688x16)。
+        """
+        if not LocalComfyNode._has_turbo_lora(wf):
+            return
+        for node in wf.values():
+            if not isinstance(node, dict):
+                continue
+            if node.get("class_type") not in ("UNETLoader", "UNETLoaderGGUF", "CheckpointLoaderSimple"):
+                continue
+            ins = node.setdefault("inputs", {})
+            for key in ("unet_name", "ckpt_name", "model_name"):
+                raw = ins.get(key)
+                if not isinstance(raw, str) or not raw:
+                    continue
+                fixed = LocalComfyNode._non_pruned_unet_name(raw)
+                if fixed != raw:
+                    logger.warning(
+                        "Turbo LoRA 不兼容 pruned 基模，已自动替换 %s → %s",
+                        raw,
+                        fixed,
+                    )
+                    ins[key] = fixed
+
+    @staticmethod
+    def _normalize_minimax_r2v_ref_keys(wf: dict) -> None:
+        """ComfyUI V3 Autogrow 只认 ref_images.ref_image_N，不能写 ref_image_N。"""
+        for node in wf.values():
+            if not isinstance(node, dict) or node.get("class_type") not in LocalComfyNode._MINIMAX_R2V_TYPES:
+                continue
+            ins = node.setdefault("inputs", {})
+            # 扁平键 ref_image_0 → ref_images.ref_image_0
+            for key in list(ins.keys()):
+                if key.startswith("ref_image_") and key[len("ref_image_") :].isdigit():
+                    ins[f"ref_images.{key}"] = ins.pop(key)
+            # 若只有错键被清掉后无参考，保留已有正确键
+            fixed = [k for k in ins if k.startswith("ref_images.ref_image_")]
+            logger.info("r2v normalize ref keys (%s) -> %s", node.get("class_type"), fixed)
 
     @staticmethod
     def _resize_reference_chain(wf: dict, count: int) -> None:
@@ -162,11 +275,11 @@ class LocalComfyNode(ComputeNode):
                 "text_workflow",
                 "workflow",
             )
-        return override or job.workflow
+        return LocalComfyNode._canonical_workflow(override or job.workflow, kind="image")
 
     @staticmethod
     def _apply_model_settings(wf: dict, model_settings: dict) -> None:
-        """把 ToonFlow 风格模型设置映射到 ComfyUI API 工作流输入。
+        """把模型设置映射到 ComfyUI API 工作流输入。
 
         不绑定固定节点 ID：工作流里只要出现相同输入字段，就会覆盖。
         """
@@ -190,6 +303,8 @@ class LocalComfyNode(ComputeNode):
             for key, value in value_by_input.items():
                 if key in inputs and value:
                     inputs[key] = value
+        # 算力节点若写了 pruned unet，配合 Turbo LoRA 会采样崩溃；此处统一纠正
+        LocalComfyNode._ensure_turbo_compatible_base(wf)
 
     @staticmethod
     def _select_flux2_klein_reference_chain(wf: dict, count: int) -> None:
@@ -225,10 +340,23 @@ class LocalComfyNode(ComputeNode):
         LocalComfyNode._resize_reference_chain(wf, len(job.reference_images))
         LocalComfyNode._select_flux2_klein_reference_chain(wf, len(job.reference_images))
         LocalComfyNode._apply_model_settings(wf, model_settings)
-        effective_width = LocalComfyNode._setting_int(model_settings, "width", job.width) or job.width
-        effective_height = LocalComfyNode._setting_int(model_settings, "height", job.height) or job.height
-        effective_steps = LocalComfyNode._setting_int(model_settings, "steps", job.steps)
-        effective_cfg = LocalComfyNode._setting_float(model_settings, "cfg", job.cfg)
+        LocalComfyNode._ensure_turbo_compatible_base(wf)
+        # 优先用本次请求（角色页分辨率/步数）；算力节点 width/height/steps 仅作缺省兜底，
+        # 避免节点里写死 768×432 覆盖角色超清竖图导致糊脸。
+        effective_width = int(job.width) if job.width else (
+            LocalComfyNode._setting_int(model_settings, "width", None) or 1024
+        )
+        effective_height = int(job.height) if job.height else (
+            LocalComfyNode._setting_int(model_settings, "height", None) or 1024
+        )
+        if job.steps is not None:
+            effective_steps = int(job.steps)
+        else:
+            effective_steps = LocalComfyNode._setting_int(model_settings, "steps", None) or 16
+        effective_cfg = job.cfg if job.cfg is not None else LocalComfyNode._setting_float(
+            model_settings, "cfg", None
+        )
+        seed = job.seed if job.seed is not None else random.randint(1, 2**31 - 1)
 
         def find_text_node(ref, seen: set[str] | None = None):
             if not isinstance(ref, list) or not ref or ref[0] not in wf:
@@ -247,6 +375,85 @@ class LocalComfyNode(ComputeNode):
                     return found
             return None
 
+        # —— MiniMax H3 文生图（minimax-h3-t2i.api.json / Turbo T8）——
+        # 提示词/尺寸在 ImageToVideo 或 AudioConditioningT8；种子 RandomNoise；
+        # 步数 BasicScheduler 或 DualClockSamplerT8（Turbo 4 步 + LoRA 时强制 4）
+        minimax_nodes = [
+            n for n in wf.values() if n.get("class_type") in LocalComfyNode._MINIMAX_COND_TYPES
+        ]
+        if minimax_nodes:
+            for node in minimax_nodes:
+                ins = node.setdefault("inputs", {})
+                if job.prompt:
+                    ins["prompt"] = job.prompt
+                ins["width"] = int(effective_width)
+                ins["height"] = int(effective_height)
+                # 参考图：有图时注入 first_frame（可选图生图/首帧引导；T2I 微视频取首帧）
+                if job.reference_images and node.get("class_type") in (
+                    "MiniMaxH3ImageToVideo",
+                    "MiniMaxH3AudioConditioningT8",
+                ):
+                    ins["first_frame"] = ["__load_ref_0__", 0]
+                    # T8：有首帧时用 I2VA，避免 T2VA + first_frame 校验失败
+                    if node.get("class_type") == "MiniMaxH3AudioConditioningT8":
+                        ins["task_type"] = "I2VA"
+            # 确保参考图 LoadImage 节点存在并连到 first_frame
+            if job.reference_images:
+                load_id = next(
+                    (
+                        nid
+                        for nid, n in wf.items()
+                        if isinstance(n, dict) and n.get("class_type") == "LoadImage"
+                    ),
+                    None,
+                )
+                if load_id is None:
+                    load_id = "300"
+                    wf[load_id] = {
+                        "class_type": "LoadImage",
+                        "_meta": {"title": "Reference first_frame"},
+                        "inputs": {"image": job.reference_images[0], "upload": "image"},
+                    }
+                else:
+                    wf[load_id]["inputs"]["image"] = job.reference_images[0]
+                for node in minimax_nodes:
+                    if node.get("class_type") in (
+                        "MiniMaxH3ImageToVideo",
+                        "MiniMaxH3AudioConditioningT8",
+                    ):
+                        node["inputs"]["first_frame"] = [load_id, 0]
+            # Turbo 4 步 LoRA 必须 steps=4，否则 DualClock 会 mat1/mat2 崩溃
+            steps = int(effective_steps) if effective_steps else 16
+            if LocalComfyNode._has_turbo_lora(wf):
+                steps = 4
+            for node in wf.values():
+                ct = node.get("class_type")
+                if ct == "RandomNoise":
+                    node.setdefault("inputs", {})["noise_seed"] = int(seed)
+                if ct in LocalComfyNode._MINIMAX_STEP_TYPES:
+                    ins = node.setdefault("inputs", {})
+                    if "steps" in ins:
+                        ins["steps"] = steps
+                    # MultiRate EXP 用 video_steps / audio_steps
+                    if "video_steps" in ins:
+                        ins["video_steps"] = steps
+                    if "audio_steps" in ins:
+                        ins["audio_steps"] = steps
+                if ct == "SaveImage":
+                    node.setdefault("inputs", {})["filename_prefix"] = "xigua_minimax_h3_t2i"
+            # duration 秒：算力设置可覆盖，默认模板 1s
+            dur = LocalComfyNode._setting_float(model_settings, "duration", None)
+            float_nodes = [n for n in wf.values() if n.get("class_type") == "PrimitiveFloat"]
+            for node in float_nodes:
+                title = ((node.get("_meta") or {}).get("title") or "")
+                if dur is None:
+                    break
+                if "Duration" in title or "duration" in title or "秒" in title or len(float_nodes) == 1:
+                    node.setdefault("inputs", {})["value"] = float(dur)
+            load_nodes = [node for node in wf.values() if node.get("class_type") == "LoadImage"]
+            for node, image in zip(load_nodes, job.reference_images, strict=False):
+                node["inputs"]["image"] = image
+            return wf
         # 定位 KSampler，并沿 conditioning 链找到文本节点。
         for node in wf.values():
             if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
@@ -258,7 +465,7 @@ class LocalComfyNode(ComputeNode):
                     negative_node = find_text_node(ins.get("negative"))
                     if negative_node is not None:
                         negative_node["inputs"]["text"] = job.negative
-                ins["seed"] = job.seed if job.seed is not None else random.randint(1, 2**31 - 1)
+                ins["seed"] = seed
                 if effective_steps:
                     ins["steps"] = effective_steps
                 if effective_cfg is not None and "cfg" in ins:
@@ -266,7 +473,7 @@ class LocalComfyNode(ComputeNode):
                 break
         # 尺寸
         for node in wf.values():
-            if node.get("class_type") in ("EmptySD3LatentImage", "EmptyLatentImage"):
+            if node.get("class_type") in ("EmptySD3LatentImage", "EmptyLatentImage", "EmptyFlux2LatentImage"):
                 node["inputs"]["width"] = effective_width
                 node["inputs"]["height"] = effective_height
         # 多参考工作流中的 LoadImage 按模板顺序注入：场景图在前、人物图在后。
@@ -274,7 +481,6 @@ class LocalComfyNode(ComputeNode):
         for node, image in zip(load_nodes, job.reference_images, strict=False):
             node["inputs"]["image"] = image
         return wf
-
     def _view_url(self, img: dict) -> str:
         q = urlencode(
             {
@@ -395,6 +601,104 @@ class LocalComfyNode(ComputeNode):
                 pass
         return path
 
+    @staticmethod
+    def _snap32(value: int, minimum: int = 32) -> int:
+        """MiniMax H3 宽高要求 32 对齐。"""
+        v = max(minimum, int(value))
+        return max(minimum, (v // 32) * 32)
+
+    @staticmethod
+    def _clamp_h3_canvas(width: int, height: int) -> tuple[int, int]:
+        """H3 原生像素面积上限 768×1344；超出则等比缩小并对齐 32。"""
+        w = LocalComfyNode._snap32(width)
+        h = LocalComfyNode._snap32(height)
+        max_pixels = 768 * 1344
+        pixels = w * h
+        if pixels <= max_pixels:
+            return w, h
+        scale = (max_pixels / float(pixels)) ** 0.5
+        w = LocalComfyNode._snap32(max(32, int(w * scale)))
+        h = LocalComfyNode._snap32(max(32, int(h * scale)))
+        while w * h > max_pixels:
+            if w >= h:
+                w = max(32, w - 32)
+            else:
+                h = max(32, h - 32)
+        return w, h
+
+    @staticmethod
+    def _format_comfy_http_error(response: httpx.Response, workflow: str) -> str:
+        """把 ComfyUI 400 的 node_errors 提炼成可读中文。"""
+        try:
+            data = response.json()
+        except Exception:  # noqa: BLE001
+            text = (response.text or "").strip()
+            return f"ComfyUI HTTP {response.status_code}（工作流 {workflow}）: {text[:500]}"
+
+        parts: list[str] = [f"ComfyUI 拒绝工作流 {workflow} (HTTP {response.status_code})"]
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("type") or ""
+            if msg:
+                parts.append(str(msg))
+        node_errors = data.get("node_errors") if isinstance(data, dict) else None
+        if isinstance(node_errors, dict):
+            for node_id, payload in list(node_errors.items())[:6]:
+                if not isinstance(payload, dict):
+                    continue
+                class_type = payload.get("class_type") or ""
+                for item in (payload.get("errors") or [])[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    detail = item.get("details") or item.get("message") or str(item)
+                    label = f"节点{node_id}"
+                    if class_type:
+                        label += f"({class_type})"
+                    parts.append(f"{label}: {detail}")
+                    # 常见：本机没装 Flux，却在跑 flux 工作流
+                    if "not in" in str(detail) and ("flux" in str(detail).lower() or "gguf" in str(detail).lower()):
+                        parts.append(
+                            "提示：当前 ComfyUI 没有 Flux 模型。请确认算力节点文生图工作流为 "
+                            "minimax-h3-t2i.api.json，并重启西瓜后端。"
+                        )
+        return " | ".join(parts)
+
+    @staticmethod
+    def _format_comfy_exec_error(entry: dict, workflow: str) -> str:
+        status = entry.get("status") if isinstance(entry, dict) else None
+        messages = []
+        exception_message = ""
+        if isinstance(status, dict):
+            for msg in status.get("messages") or []:
+                if isinstance(msg, list) and len(msg) >= 2 and msg[0] == "execution_error":
+                    payload = msg[1] if isinstance(msg[1], dict) else {}
+                    exception_message = str(payload.get("exception_message") or "")
+                    node_type = payload.get("node_type") or payload.get("node_id") or ""
+                    messages.append(f"{node_type}: {exception_message[:280]}")
+                else:
+                    messages.append(str(msg)[:400])
+        if "2688" in exception_message or (
+            "mat1" in exception_message.lower() and "mat2" in exception_message.lower()
+        ):
+            return (
+                f"ComfyUI 执行失败（{workflow}）：Turbo 4 步 LoRA 与 pruned 基模不兼容"
+                "（AdaLN 8 vs 2688）。请使用非 pruned 模型 "
+                "`minimax_h3_fl2va_int8_convrot.safetensors`，"
+                "并在算力节点 model_settings.unet_name 去掉 pruned。"
+                f" 原始错误: {exception_message[:200]}"
+            )
+        if "tuple index out of range" in exception_message and (
+            "AVDecode" in str(messages) or "audio" in exception_message.lower()
+        ):
+            return (
+                f"ComfyUI 执行失败（{workflow}）：音视频联合解码在静帧/微视频长度下崩溃。"
+                "文生图请用 MiniMaxH3StillDecodeT8（只解视频 latent）。"
+                f" 原始错误: {exception_message[:200]}"
+            )
+        if messages:
+            return f"ComfyUI 执行失败（{workflow}）: " + "；".join(messages[:4])
+        return f"ComfyUI 执行出错（工作流 {workflow}）"
+
     async def text2image(self, job: ImageJob) -> JobResult:
         try:
             workflow = self._workflow_for_job(job, self.model_settings)
@@ -413,13 +717,23 @@ class LocalComfyNode(ComputeNode):
                 if job.reference_images:
                     uploaded = await self._upload_reference_images(c, job.reference_images)
                     job = replace(job, reference_images=uploaded)
+                # MiniMax 宽高对齐 32 + 面积上限
+                if any(
+                    isinstance(n, dict) and n.get("class_type") in LocalComfyNode._MINIMAX_COND_TYPES
+                    for n in wf.values()
+                ):
+                    cw, ch = self._clamp_h3_canvas(job.width, job.height)
+                    job = replace(job, width=cw, height=ch)
                 wf = self._inject(wf, job, self.model_settings)
                 r = await c.post(
                     f"{self.base_url}/prompt",
                     json={"prompt": wf, "client_id": client_id},
                     headers=self._headers(),
                 )
-                r.raise_for_status()
+                if r.status_code >= 400:
+                    detail = self._format_comfy_http_error(r, workflow)
+                    logger.warning("ComfyUI /prompt 失败: %s", detail)
+                    return JobResult("failed", error=detail, meta={"workflow": workflow, "status_code": r.status_code})
                 prompt_id = r.json().get("prompt_id")
                 if not prompt_id:
                     return JobResult("failed", error="ComfyUI 未返回 prompt_id")
@@ -440,9 +754,13 @@ class LocalComfyNode(ComputeNode):
                                 meta={"prompt_id": prompt_id, "workflow": workflow},
                             )
                         if entry.get("status", {}).get("status_str") == "error":
-                            return JobResult("failed", error="ComfyUI 执行出错", meta={"prompt_id": prompt_id})
+                            return JobResult(
+                                "failed",
+                                error=self._format_comfy_exec_error(entry, workflow),
+                                meta={"prompt_id": prompt_id, "workflow": workflow},
+                            )
                     await asyncio.sleep(1.5)
-                return JobResult("failed", error="生成超时")
+                return JobResult("failed", error=f"生成超时（工作流 {workflow}）")
         except httpx.HTTPError as e:
             logger.warning("ComfyUI 请求失败: %s", e)
             return JobResult("failed", error=f"连接 ComfyUI 失败: {e}")
@@ -451,7 +769,6 @@ class LocalComfyNode(ComputeNode):
             return JobResult("failed", error=str(e))
         except Exception as e:  # noqa: BLE001
             return JobResult("failed", error=f"{type(e).__name__}: {e}")
-
     # ===== 图生视频（LTX i2v 等）=====
     @staticmethod
     def _inject_video(
@@ -462,36 +779,194 @@ class LocalComfyNode(ComputeNode):
         duration: int | None,
         seed: int,
         audio_name: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        filename_prefix: str = "xigua_i2v",
+        negative: str | None = None,
+        reference_image_names: list[str] | None = None,
     ) -> dict:
-        """按节点类型/标题注入：LoadImage=输入图、正向 CLIPTextEncode=提示词、
-        标题含「秒」的 INTConstant=时长、noise_seed/seed=随机种子。负向提示词保留工作流自带。"""
-        for node in wf.values():
-            if node.get("class_type") == "LoadImage":
-                node["inputs"]["image"] = image_name
-                break
-        if prompt:
-            positive = first = None
+        """注入 LoadImage / 多参考 / MiniMax 条件节点 / 时长 / 种子。"""
+        ref_names = [n for n in (reference_image_names or []) if n] or (
+            [image_name] if image_name else []
+        )
+        load_nodes = [
+            (nid, node)
+            for nid, node in sorted(wf.items(), key=lambda kv: str(kv[0]))
+            if isinstance(node, dict) and node.get("class_type") == "LoadImage"
+        ]
+        ref_loads = [
+            (nid, node)
+            for nid, node in load_nodes
+            if "ref" in ((node.get("_meta") or {}).get("title") or "").lower()
+            or "picture" in ((node.get("_meta") or {}).get("title") or "").lower()
+        ]
+        if not ref_loads:
+            ref_loads = list(load_nodes)
+        for i, name in enumerate(ref_names):
+            if i < len(ref_loads):
+                ref_loads[i][1].setdefault("inputs", {})["image"] = name
+            else:
+                new_id = f"refload_{i + 1}"
+                wf[new_id] = {
+                    "class_type": "LoadImage",
+                    "_meta": {"title": f"Ref Picture {i + 1}"},
+                    "inputs": {"image": name, "upload": "image"},
+                }
+                ref_loads.append((new_id, wf[new_id]))
+        if not reference_image_names and image_name:
             for node in wf.values():
-                if node.get("class_type") == "CLIPTextEncode":
-                    first = first or node
-                    title = (node.get("_meta") or {}).get("title", "")
-                    if "正" in title or "positive" in title.lower():
-                        positive = node
-                        break
-            target = positive or first
-            if target is not None:
-                target["inputs"]["text"] = prompt
-        if duration:
-            for node in wf.values():
-                if node.get("class_type") == "INTConstant" and "秒" in ((node.get("_meta") or {}).get("title", "")):
-                    node["inputs"]["value"] = int(duration)
+                if isinstance(node, dict) and node.get("class_type") == "LoadImage":
+                    node.setdefault("inputs", {})["image"] = image_name
                     break
+
+        r2v_nodes = [
+            node
+            for node in wf.values()
+            if isinstance(node, dict) and node.get("class_type") in LocalComfyNode._MINIMAX_R2V_TYPES
+        ]
+        for r2v_node in r2v_nodes:
+            if not ref_names:
+                break
+            ins = r2v_node.setdefault("inputs", {})
+            # 只清参考图连线，勿删 ref_image_size（Comfy 必填，误删会 400）
+            for key in list(ins.keys()):
+                if key == "ref_image_size":
+                    continue
+                # Comfy V3 Autogrow 正式键：ref_images.ref_image_0 / ref_images.ref_image_1 …
+                if key == "ref_images" or key.startswith("ref_images."):
+                    del ins[key]
+                    continue
+                # 兼容旧错误写法 ref_image_0（会被 execute 直接拒收）
+                if key.startswith("ref_image_") and key[len("ref_image_") :].isdigit():
+                    del ins[key]
+            used = ref_loads[: len(ref_names)]
+            # 必须用嵌套键 ref_images.ref_image_N，否则 TypeError: unexpected keyword 'ref_image_0'
+            for i, (nid, _) in enumerate(used):
+                ins[f"ref_images.ref_image_{i}"] = [str(nid), 0]
+            if prompt:
+                ins["prompt"] = prompt
+            if "ref_image_size" not in ins or not ins.get("ref_image_size"):
+                ins["ref_image_size"] = "match"
+            # T8：多参考必须 Ref2VA；勿用 T2VA（会拒绝 ref media）
+            if r2v_node.get("class_type") == "MiniMaxH3AudioConditioningT8":
+                task = str(ins.get("task_type") or "auto").lower()
+                if task in ("", "auto", "t2va", "t2v"):
+                    ins["task_type"] = "Ref2VA"
+            logger.info(
+                "r2v inject type=%s refs=%s keys=%s prompt_len=%s",
+                r2v_node.get("class_type"),
+                len(used),
+                [k for k in ins if str(k).startswith("ref_")],
+                len(prompt or ""),
+            )
+
+        # 收集全部 CLIPTextEncode，按标题区分正/负（仅改 text 字段，不破坏连线）
+        clip_nodes: list[dict] = [
+            node for node in wf.values() if node.get("class_type") == "CLIPTextEncode"
+        ]
+        positive = negative_node = first = None
+        for node in clip_nodes:
+            first = first or node
+            title = ((node.get("_meta") or {}).get("title") or "").lower()
+            if "负" in title or "negative" in title or "neg" in title:
+                negative_node = node
+            elif "正" in title or "positive" in title or "pos" in title:
+                positive = node
+        # 无标题时：第一个当正向，第二个当负向（LTX 模板惯例）
+        if positive is None and first is not None:
+            positive = first
+        if negative_node is None and len(clip_nodes) >= 2:
+            for node in clip_nodes:
+                if node is not positive:
+                    negative_node = node
+                    break
+        if prompt and positive is not None:
+            positive["inputs"]["text"] = prompt
+        if negative and negative_node is not None:
+            negative_node["inputs"]["text"] = negative
+        elif negative and positive is not None and negative_node is None:
+            # 仅一个 CLIP 节点时无法分负向，把关键负向词并入正向尾部兜底
+            positive["inputs"]["text"] = (
+                (positive["inputs"].get("text") or "") + "。避免：" + negative[:400]
+            ).strip("。")
+        # 时长钳到 [2, 5] 秒
+        from app.services.video_generation import (
+            VIDEO_DEFAULT_DURATION,
+            clamp_video_duration,
+            minimax_h3_frame_length,
+        )
+
+        safe_duration = clamp_video_duration(duration, VIDEO_DEFAULT_DURATION)
+        for node in wf.values():
+            if node.get("class_type") == "INTConstant" and "秒" in ((node.get("_meta") or {}).get("title", "")):
+                node["inputs"]["value"] = int(safe_duration)
+                break
+
+        fps = 24
+        for node in wf.values():
+            ct = node.get("class_type")
+            if ct not in ("CreateVideo", "VHS_VideoCombine"):
+                continue
+            ins = node.get("inputs") or {}
+            raw_fps = ins.get("fps") if ct == "CreateVideo" else ins.get("frame_rate")
+            if isinstance(raw_fps, (int, float)) and raw_fps > 0:
+                fps = int(raw_fps)
+                break
+        # LTX 等：length ≈ fps*s+1；MiniMax H3：17k+5 网格（5s→124）
+        has_minimax = any(
+            isinstance(n, dict) and n.get("class_type") in LocalComfyNode._MINIMAX_COND_TYPES
+            for n in wf.values()
+        )
+        frame_length = (
+            minimax_h3_frame_length(safe_duration, fps)
+            if has_minimax
+            else int(safe_duration) * fps + 1
+        )
+        for node in wf.values():
+            ct = node.get("class_type") or ""
+            ins = node.get("inputs")
+            if not isinstance(ins, dict):
+                continue
+            is_video_cond = (
+                ct in LocalComfyNode._MINIMAX_COND_TYPES
+                or "ImageToVideo" in ct
+                or "ReferenceToVideo" in ct
+                or ct.endswith("ToVideoLatent")
+                or "LTX" in ct
+            )
+            if "length" in ins and not isinstance(ins["length"], list) and is_video_cond:
+                ins["length"] = frame_length
+            if (
+                "prompt" in ins
+                and not isinstance(ins["prompt"], list)
+                and ct in LocalComfyNode._MINIMAX_COND_TYPES
+                and prompt
+            ):
+                ins["prompt"] = prompt
+            if width and "width" in ins and not isinstance(ins["width"], list) and is_video_cond:
+                ins["width"] = LocalComfyNode._snap32(int(width))
+            if height and "height" in ins and not isinstance(ins["height"], list) and is_video_cond:
+                ins["height"] = LocalComfyNode._snap32(int(height))
+
+        # Turbo LoRA：DualClock / MultiRate 固定 4 步
+        turbo = LocalComfyNode._has_turbo_lora(wf)
         for node in wf.values():
             ins = node.get("inputs", {})
             if isinstance(ins, dict):
                 for key in ("noise_seed", "seed"):
                     if key in ins and not isinstance(ins[key], list):
                         ins[key] = seed
+            ct = node.get("class_type")
+            if ct == "RandomNoise":
+                node.setdefault("inputs", {})["noise_seed"] = int(seed)
+            if turbo and ct in LocalComfyNode._MINIMAX_STEP_TYPES:
+                step_ins = node.setdefault("inputs", {})
+                if "steps" in step_ins and not isinstance(step_ins["steps"], list):
+                    step_ins["steps"] = 4
+                if "video_steps" in step_ins and not isinstance(step_ins["video_steps"], list):
+                    step_ins["video_steps"] = 4
+                if "audio_steps" in step_ins and not isinstance(step_ins["audio_steps"], list):
+                    step_ins["audio_steps"] = 4
         if audio_name:
             # Keep the supplied TTS latent un-noised while LTX jointly generates the video.
             wf["201"] = {
@@ -501,7 +976,7 @@ class LocalComfyNode(ComputeNode):
             }
             wf["202"] = {
                 "class_type": "TrimAudioDuration",
-                "inputs": {"audio": ["201", 0], "start_index": 0.0, "duration": float(duration or 5)},
+                "inputs": {"audio": ["201", 0], "start_index": 0.0, "duration": float(safe_duration)},
                 "_meta": {"title": "Match clip duration"},
             }
             wf["203"] = {
@@ -528,7 +1003,8 @@ class LocalComfyNode(ComputeNode):
             if node.get("class_type") in ("SaveVideo", "VHS_VideoCombine", "SaveAnimatedWEBP", "SaveAnimatedPNG"):
                 ins = node.get("inputs", {})
                 if isinstance(ins, dict) and "filename_prefix" in ins:
-                    ins["filename_prefix"] = "xigua_i2v"
+                    ins["filename_prefix"] = filename_prefix
+        LocalComfyNode._ensure_turbo_compatible_base(wf)
         return wf
 
     @staticmethod
@@ -544,17 +1020,57 @@ class LocalComfyNode(ComputeNode):
                         return item
         return None
 
+    @staticmethod
+    def _comfy_prompt_error(response: httpx.Response) -> str:
+        """解析 Comfy /prompt 400 校验错误，便于前端展示。"""
+        try:
+            data = response.json()
+        except Exception:  # noqa: BLE001
+            return (response.text or "")[:400] or response.reason_phrase
+        if not isinstance(data, dict):
+            return str(data)[:400]
+        err = data.get("error") if isinstance(data.get("error"), dict) else {}
+        parts: list[str] = []
+        if err.get("message"):
+            parts.append(str(err["message"]))
+        if err.get("details"):
+            parts.append(str(err["details"]))
+        node_errors = data.get("node_errors")
+        if isinstance(node_errors, dict):
+            for nid, info in list(node_errors.items())[:4]:
+                if not isinstance(info, dict):
+                    continue
+                ct = info.get("class_type") or nid
+                for e in (info.get("errors") or [])[:2]:
+                    if isinstance(e, dict):
+                        parts.append(f"{ct}: {e.get('message') or ''} {e.get('details') or ''}".strip())
+        return "；".join(p for p in parts if p)[:500] or "工作流校验失败"
+
     async def text2video(
         self,
         *,
-        input_image: str,
+        input_image: str | None = None,
         prompt: str | None,
         duration: int | None = None,
-        workflow: str = "ltx23-i2v.api.json",
+        workflow: str = "minimax-h3-r2v.api.json",
         seed: int | None = None,
         input_audio: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        negative: str | None = None,
+        reference_images: list[str] | None = None,
     ) -> JobResult:
-        """单图 → 视频：上传输入图、注入提示词/时长/种子、POST /prompt、轮询 /history、下载 mp4。"""
+        """多参考图 / 单图 → 视频：上传参考、注入提示词（含台词语音）/时长/种子、轮询下载。"""
+        # 节点 model_settings 优先覆盖 i2v/r2v；旧名一律归一到 Turbo r2v
+        ms = getattr(self, "model_settings", None) or {}
+        if isinstance(ms, dict):
+            override = ms.get("workflow_i2v") or ms.get("workflow_video") or ms.get("workflow_r2v")
+            if isinstance(override, str) and override.strip():
+                workflow = override.strip()
+        workflow = self._canonical_workflow(workflow, kind="video")
+        if workflow != "minimax-h3-r2v.api.json":
+            workflow = "minimax-h3-r2v.api.json"
+
         try:
             wf = self._load_workflow(workflow)
         except FileNotFoundError:
@@ -562,11 +1078,27 @@ class LocalComfyNode(ComputeNode):
         except Exception as e:  # noqa: BLE001
             return JobResult("failed", error=f"工作流载入失败: {e}")
 
+        is_ltx = False  # LTX 工作流已废弃
+        is_r2v = True
+        if input_audio:
+            return JobResult(
+                "failed",
+                error="当前工作流不支持独立音频驱动；请把对白写在提示词中由模型生成语音",
+            )
+
+        refs = [u for u in (reference_images or []) if u]
+        if not refs and input_image:
+            refs = [input_image]
+        if not refs:
+            return JobResult("failed", error="缺少参考图：请提供角色/场景定妆图或镜头参考图")
+
         client_id = uuid.uuid4().hex
         seed = seed if seed is not None else random.randint(1, 2**31 - 1)
+        prefix = "xigua_ltx" if is_ltx else ("xigua_r2v" if is_r2v else "xigua_i2v")
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=10.0), follow_redirects=True) as c:
-                uploaded = await self._upload_reference_images(c, [input_image])
+                uploaded = await self._upload_reference_images(c, refs)
+                logger.info("text2video upload refs raw=%s uploaded=%s r2v=%s", refs, uploaded, is_r2v)
                 audio_name = None
                 if input_audio:
                     audio_name = (await self._upload_reference_images(c, [input_audio]))[0]
@@ -577,13 +1109,30 @@ class LocalComfyNode(ComputeNode):
                     duration=duration,
                     seed=seed,
                     audio_name=audio_name,
+                    width=width,
+                    height=height,
+                    filename_prefix=prefix,
+                    negative=negative,
+                    # 始终注入全部参考文件名（r2v 用多图；i2v 仍会写 LoadImage[0]）
+                    reference_image_names=uploaded,
                 )
+                # 提交前强制纠正 Autogrow 键名（防止热重载/旧缓存仍写出 ref_image_0）
+                self._normalize_minimax_r2v_ref_keys(wf)
+                try:
+                    dbg = settings.data_dir / "comfy_debug" / "last_r2v_prompt.json"
+                    dbg.parent.mkdir(parents=True, exist_ok=True)
+                    dbg.write_text(json.dumps(wf, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError:
+                    pass
                 r = await c.post(
                     f"{self.base_url}/prompt",
                     json={"prompt": wf, "client_id": client_id},
                     headers=self._headers(),
                 )
-                r.raise_for_status()
+                if r.status_code >= 400:
+                    detail = LocalComfyNode._comfy_prompt_error(r)
+                    logger.warning("ComfyUI /prompt %s: %s", r.status_code, detail)
+                    return JobResult("failed", error=f"ComfyUI 拒绝工作流 ({r.status_code}): {detail}")
                 prompt_id = r.json().get("prompt_id")
                 if not prompt_id:
                     return JobResult("failed", error="ComfyUI 未返回 prompt_id")
@@ -597,12 +1146,18 @@ class LocalComfyNode(ComputeNode):
                         media = self._first_media(entry.get("outputs", {}), (".mp4", ".webm", ".mkv", ".gif"))
                         if media:
                             path = await self._download(c, media)
-                            path = await asyncio.to_thread(self._strip_audio, path)
+                            # 产品策略：语音由视频模型直接生成/附带，保留成片原生音轨。
+                            # 不再剥离音轨，也不再依赖独立 TTS 配音。
                             return JobResult(
                                 "completed",
                                 image_path=str(path),
                                 image_url=self._view_url(media),
-                                meta={"prompt_id": prompt_id},
+                                meta={
+                                    "prompt_id": prompt_id,
+                                    "audio_driven": bool(input_audio),
+                                    "kept_audio": True,
+                                    "model_audio": True,
+                                },
                             )
                         if entry.get("status", {}).get("status_str") == "error":
                             return JobResult("failed", error="ComfyUI 执行出错（多为模型名不匹配/显存不足）", meta={"prompt_id": prompt_id})

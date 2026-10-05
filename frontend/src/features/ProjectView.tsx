@@ -4,19 +4,17 @@ import {
   createDrama,
   createEpisode,
   deleteDrama,
+  fetchStyleOptions,
   importNovel,
+  listArtStyles,
   listEpisodes,
   listProjects,
+  updateStyleBible,
+  type ArtStyle,
   type EpisodeSummary,
   type Project,
+  type StyleOptions,
 } from "../api/client";
-
-const STYLE_OPTIONS = [
-  { value: "realistic", label: "写实电影感" },
-  { value: "anime", label: "动漫" },
-  { value: "ink", label: "国风水墨" },
-  { value: "3d", label: "3D 渲染" },
-];
 
 export default function ProjectView({
   current,
@@ -35,11 +33,16 @@ export default function ProjectView({
   const [contextMenu, setContextMenu] = useState<{ project: Project; x: number; y: number } | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  // 新建项目
+  // 新建项目 / 风格圣经
   const [dTitle, setDTitle] = useState("");
   const [dGenre, setDGenre] = useState("");
-  const [dStyle, setDStyle] = useState("realistic");
+  const [dPacing, setDPacing] = useState("pace_balanced");
+  const [dAspect, setDAspect] = useState("9:16");
+  const [dArtStyleId, setDArtStyleId] = useState<number | "">("");
+  const [artStyles, setArtStyles] = useState<ArtStyle[]>([]);
+  const [styleOpts, setStyleOpts] = useState<StyleOptions | null>(null);
   const [creatingD, setCreatingD] = useState(false);
+  const [savingBible, setSavingBible] = useState(false);
   const dTitleRef = useRef<HTMLInputElement>(null);
 
   // 新建分集
@@ -66,6 +69,13 @@ export default function ProjectView({
 
   useEffect(() => {
     refreshDramas().catch((e) => setErr(e instanceof Error ? e.message : "加载项目失败"));
+    Promise.all([listArtStyles(), fetchStyleOptions()])
+      .then(([styles, opts]) => {
+        setArtStyles(styles);
+        setStyleOpts(opts);
+        if (styles.length && dArtStyleId === "") setDArtStyleId(styles[0].id);
+      })
+      .catch(() => { /* 风格选项失败不阻断列表 */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -89,6 +99,12 @@ export default function ProjectView({
     setSelected(d);
     setEpisodes([]);
     setLoading(true);
+    const bible = d.style_bible;
+    if (bible?.pacing_profile) setDPacing(bible.pacing_profile);
+    if (bible?.aspect) setDAspect(bible.aspect);
+    if (bible?.art_style_id != null) setDArtStyleId(bible.art_style_id);
+    if (bible?.narrative_tag) setDGenre(bible.narrative_tag);
+    else if (d.genre) setDGenre(d.genre);
     try {
       setEpisodes(await listEpisodes(d.id));
     } catch (e) {
@@ -107,7 +123,16 @@ export default function ProjectView({
     setCreatingD(true);
     setErr(null);
     try {
-      const created = await createDrama({ title: dTitle.trim(), genre: dGenre.trim() || null, style: dStyle });
+      const styleName = artStyles.find((s) => s.id === dArtStyleId)?.name ?? null;
+      const created = await createDrama({
+        title: dTitle.trim(),
+        genre: dGenre.trim() || null,
+        narrative_tag: dGenre.trim() || null,
+        style: styleName,
+        art_style_id: typeof dArtStyleId === "number" ? dArtStyleId : null,
+        pacing_profile: dPacing,
+        aspect: dAspect,
+      });
       setDTitle("");
       setDGenre("");
       await refreshDramas(created.id);
@@ -115,6 +140,28 @@ export default function ProjectView({
       setErr(e instanceof Error ? e.message : "新建项目失败");
     } finally {
       setCreatingD(false);
+    }
+  };
+
+  const saveSelectedBible = async () => {
+    if (!selected) return;
+    setSavingBible(true);
+    setErr(null);
+    try {
+      const styleName = artStyles.find((s) => s.id === dArtStyleId)?.name ?? null;
+      const updated = await updateStyleBible(selected.id, {
+        art_style_id: typeof dArtStyleId === "number" ? dArtStyleId : null,
+        visual_name: styleName,
+        pacing_profile: dPacing,
+        narrative_tag: dGenre.trim() || selected.genre || null,
+        aspect: dAspect,
+      });
+      setSelected(updated);
+      await refreshDramas(updated.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "保存风格圣经失败");
+    } finally {
+      setSavingBible(false);
     }
   };
 
@@ -203,17 +250,44 @@ export default function ProjectView({
         {/* 左：项目列表 + 新建 */}
         <div style={{ background: "var(--bg)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "auto" }}>
           <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6, borderBottom: "1px solid var(--border)" }}>
-            <p style={label}>新建短剧项目</p>
+            <p style={label}>新建 / 项目画风（全局生效）</p>
+            <p style={{ fontSize: 11, color: "var(--text3)", margin: "0 0 4px", lineHeight: 1.4 }}>
+              这里选的画风会写入项目，角色/场景/道具/分镜/视频默认都跟它。画风库只改预设，需点「设为项目画风」才会绑到项目。
+            </p>
             <input ref={dTitleRef} value={dTitle} onChange={(e) => setDTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addDrama(); }} placeholder="剧名，如：时光邮局" />
-            <input value={dGenre} onChange={(e) => setDGenre(e.target.value)} placeholder="题材（可选），如：都市/悬疑" />
-            <select value={dStyle} onChange={(e) => setDStyle(e.target.value)}>
-              {STYLE_OPTIONS.map((s) => (
-                <option key={s.value} value={s.value}>{s.label}</option>
+            <select value={dGenre} onChange={(e) => setDGenre(e.target.value)}>
+              <option value="">题材类型（可选）</option>
+              {(styleOpts?.story_types ?? []).map((t) => (
+                <option key={t.key} value={t.key}>{t.display_name}</option>
+              ))}
+            </select>
+            <select value={dPacing} onChange={(e) => setDPacing(e.target.value)}>
+              {(styleOpts?.pacing_profiles ?? [{ key: "pace_balanced", display_name: "均衡叙事", description: "" }]).map((p) => (
+                <option key={p.key} value={p.key}>{p.display_name}</option>
+              ))}
+            </select>
+            <select
+              value={dArtStyleId === "" ? "" : String(dArtStyleId)}
+              onChange={(e) => setDArtStyleId(e.target.value ? Number(e.target.value) : "")}
+            >
+              <option value="">项目画风（必选推荐）</option>
+              {artStyles.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <select value={dAspect} onChange={(e) => setDAspect(e.target.value)}>
+              {(styleOpts?.aspect_options ?? ["9:16", "16:9"]).map((a) => (
+                <option key={a} value={a}>{a === "9:16" ? "竖屏 9:16" : "横屏 16:9"}</option>
               ))}
             </select>
             <button className="btn-primary" style={{ padding: "6px 12px", opacity: creatingD || !dTitle.trim() ? 0.6 : 1 }} onClick={addDrama} disabled={creatingD}>
               {creatingD ? <Loader2 size={14} className="spin" /> : <FolderPlus size={14} />} 新建项目
             </button>
+            {selected && (
+              <button className="btn-secondary" style={{ padding: "6px 12px" }} onClick={saveSelectedBible} disabled={savingBible}>
+                {savingBible ? <Loader2 size={14} className="spin" /> : null} 保存项目画风
+              </button>
+            )}
           </div>
           <div style={{ padding: "6px 8px" }}>
             {dramas.length === 0 ? (
@@ -237,7 +311,13 @@ export default function ProjectView({
                 >
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{deletingId === d.id ? "正在删除…" : d.title}</div>
                   <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>
-                    {d.genre || "未分类"} · {STYLE_OPTIONS.find((s) => s.value === d.style)?.label ?? d.style ?? "—"}
+                    {d.style_bible?.visual_name || d.style || "默认画风"}
+                    {" · "}
+                    {styleOpts?.pacing_profiles.find((p) => p.key === d.style_bible?.pacing_profile)?.display_name
+                      || d.style_bible?.pacing_profile
+                      || "均衡"}
+                    {" · "}
+                    {d.style_bible?.aspect || "9:16"}
                   </div>
                 </button>
               ))

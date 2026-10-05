@@ -7,6 +7,7 @@ import {
   listComputeNodes,
   listProjects,
   listScenes,
+  mediaDisplayUrl,
   polishPrompt,
   updateScenePrompt,
   type ArtStyle,
@@ -20,8 +21,11 @@ import AssetGenerationControls from "../components/AssetGenerationControls";
 import AssetHistoryStrip from "../components/AssetHistoryStrip";
 import AdditionalInstructionField from "../components/AdditionalInstructionField";
 import ImageLightbox from "../components/ImageLightbox";
+import MediaUploadButton from "../components/MediaUploadButton";
+import { notifyAssetsChanged } from "../components/PipelineBar";
 import { useBatchRun, type BatchOutcome } from "../components/useBatchRun";
 import { useSelection } from "../components/useSelection";
+import { followProjectStyleLabel, resolveStyleName } from "./styleHelpers";
 
 export default function SceneAssetsView({
   currentDramaId,
@@ -39,6 +43,7 @@ export default function SceneAssetsView({
   const [styleId, setStyleId] = useState<number | undefined>();
   const [nodes, setNodes] = useState<ComputeNodeRecord[]>([]);
   const [resolutions, setResolutions] = useState<Record<number, AssetResolution>>({});
+  const [stepsById, setStepsById] = useState<Record<number, number>>({});
   const [nodeIds, setNodeIds] = useState<Record<number, number | undefined>>({});
   const [generating, setGenerating] = useState<number | null>(null);
   const [extracting, setExtracting] = useState(false);
@@ -61,13 +66,18 @@ export default function SceneAssetsView({
     }).catch((e: Error) => setNotice(e.message));
     listArtStyles().then(setStyles).catch(() => undefined);
     listComputeNodes().then(setNodes).catch(() => undefined);
+    setStyleId(undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDramaId]);
+
+  const activeProject = projects.find((p) => p.id === projectId) ?? null;
+  const effectiveStyleLabel = resolveStyleName(styles, styleId, activeProject);
 
   const loadScenes = (id: number) =>
     listScenes(id)
       .then((rows) => {
         setScenes(rows);
+        notifyAssetsChanged();
         setPrompts((prev) => {
           const next = { ...prev };
           rows.forEach((s) => {
@@ -123,7 +133,8 @@ export default function SceneAssetsView({
         art_style_id: styleId,
         username,
         node_id: nodeIds[scene.id],
-        resolution: resolutions[scene.id] ?? "landscape_1024x576",
+        resolution: resolutions[scene.id] ?? "uhd_landscape_1280x720",
+        steps: stepsById[scene.id] ?? 32,
         extra: extra.trim() || undefined,
       });
       return { ok: !result.blocked, message: result.blocked ? result.message ?? "提示词触发红线" : undefined };
@@ -187,18 +198,34 @@ export default function SceneAssetsView({
   return (
     <div className="feature-view">
       <div className="feature-header">
-        <div><h2>场景 / 造景</h2><p>从剧本提取场景，生成纯背景参考图</p></div>
+        <div>
+          <h2>场景 / 造景</h2>
+          <p>
+            从剧本提取场景，生成<strong>纯环境空镜</strong>（无人）参考图 · 当前出图画风：
+            <strong style={{ color: "var(--green-t)" }}>{effectiveStyleLabel}</strong>
+          </p>
+        </div>
         <div className="feature-filters">
           <button className="btn-primary" style={{ width: "auto", padding: "6px 14px" }} disabled={extracting} onClick={extract} title="从当前分集的剧本/原文中提取角色、场景、道具">
             {extracting ? <LoaderCircle className="spin" size={14} /> : <Wand2 size={14} />} AI 提取角色/场景
           </button>
-          <select value={projectId ?? ""} onChange={(e) => setProjectId(Number(e.target.value))}>
+          <select
+            value={projectId ?? ""}
+            onChange={(e) => {
+              setProjectId(Number(e.target.value));
+              setStyleId(undefined);
+            }}
+          >
             {!projects.length && <option value="">暂无项目</option>}
             {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
           </select>
-          <select value={styleId ?? ""} onChange={(e) => setStyleId(e.target.value ? Number(e.target.value) : undefined)}>
-            <option value="">默认画风</option>
-            {styles.map((style) => <option key={style.id} value={style.id}>{style.name}</option>)}
+          <select
+            value={styleId ?? ""}
+            onChange={(e) => setStyleId(e.target.value ? Number(e.target.value) : undefined)}
+            title="默认跟随项目画风"
+          >
+            <option value="">{followProjectStyleLabel(activeProject)}</option>
+            {styles.map((style) => <option key={style.id} value={style.id}>{style.name}（仅本次出图）</option>)}
           </select>
         </div>
       </div>
@@ -231,7 +258,18 @@ export default function SceneAssetsView({
                 >
                   <input type="checkbox" checked={picked} onChange={() => sel.toggle(scene.id)} disabled={batch.running} />
                 </label>
-                {scene.image_url ? <img src={scene.image_url} alt={scene.location ?? ""} onClick={() => setPreview(scene.image_url)} style={{ cursor: "zoom-in" }} title="点击放大预览" /> : <Image size={30} />}
+                {scene.image_url ? (
+                  <img
+                    key={scene.image_url}
+                    src={mediaDisplayUrl(scene.image_url)}
+                    alt={scene.location ?? ""}
+                    onClick={() => setPreview(mediaDisplayUrl(scene.image_url))}
+                    style={{ cursor: "zoom-in", width: "100%", height: "100%", objectFit: "cover" }}
+                    title="点击放大预览"
+                  />
+                ) : (
+                  <Image size={30} />
+                )}
                 {generating === scene.id && (
                   <span style={{ position: "absolute", right: 6, top: 6, zIndex: 2, color: "var(--green-t)" }}><LoaderCircle className="spin" size={16} /></span>
                 )}
@@ -266,17 +304,46 @@ export default function SceneAssetsView({
                   </button>
                 </div>
                 <AssetGenerationControls
-                  resolution={resolutions[scene.id] ?? "landscape_1024x576"}
+                  variant="scene"
+                  resolution={resolutions[scene.id] ?? "uhd_landscape_1280x720"}
+                  steps={stepsById[scene.id] ?? 4}
                   nodeId={nodeIds[scene.id]}
                   nodes={nodes}
                   disabled={batch.running}
                   onResolutionChange={(value) => setResolutions((previous) => ({ ...previous, [scene.id]: value }))}
+                  onStepsChange={(value) => setStepsById((previous) => ({ ...previous, [scene.id]: value }))}
                   onNodeChange={(value) => setNodeIds((previous) => ({ ...previous, [scene.id]: value }))}
                 />
-                <div style={{ display: "flex", gap: 6 }}>
+                <p style={{ margin: "0 0 6px", fontSize: 11, color: "var(--text3)" }}>
+                  场景与角色一样可调<strong>分辨率 + 采样步数</strong>；默认超清横屏 1280×720 · 32 步。糊了就提高步数后「重新生成」。
+                </p>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button className="btn-secondary" style={{ flex: "none", padding: "5px 10px" }} disabled={saving != null || batch.running} onClick={() => savePrompt(scene)} title="只保存提示词，不出图">
                     {saving === scene.id ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} 保存
                   </button>
+                  <MediaUploadButton
+                    targetType="scene"
+                    targetId={scene.id}
+                    username={username}
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    label=" 上传图"
+                    title="从本机上传场景参考图"
+                    disabled={batch.running}
+                    style={{ flex: "none", padding: "5px 10px" }}
+                    onDone={async (r) => {
+                      const raw = r.image_url || r.url;
+                      setScenes((prev) => prev.map((item) => (item.id === scene.id ? { ...item, image_url: raw } : item)));
+                      if (projectId != null) {
+                        try {
+                          await loadScenes(projectId);
+                        } catch {
+                          /* ignore */
+                        }
+                      }
+                      setNotice("场景图已上传并刷新");
+                    }}
+                    onError={(m) => setNotice(m)}
+                  />
                   <button className="btn-secondary" style={{ flex: 1 }} disabled={generating != null || batch.running} onClick={() => generate(scene)}>
                     {generating === scene.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
                     {scene.image_url ? "重新生成" : "生成场景图"}

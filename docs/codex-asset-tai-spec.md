@@ -1,4 +1,4 @@
-# Codex 任务：素材台增强（#1 干净人物 + Toonflow ③④⑤⑥⑦⑧）
+﻿# Codex 任务：素材台增强（#1 干净人物 + 素材台增强项）
 
 > 执行者：Codex（effort = xhigh）。验收/提交：Claude。
 > **只写实现**。不要启动任何服务器、不要 `npm install/build/dev`、不要 `git commit`、不要跑长 verify。
@@ -65,7 +65,7 @@
 - 接口：
   - `GET /voices` → 列 ai_voices。
   - `PATCH /projects/characters/{id}/voice` → body `{voice_id, voice_provider}` 写入角色。
-  - `POST /projects/{drama_id}/assign-voices`（一键绑定）→ 若配了 LLM 用 `voice_assigner` skill 按性别/年龄/性格分配；**没配 LLM 则用确定性回落**（按 role/personality 关键词的简单规则轮转预设），给每个还没音色的角色分配并落库；返回每角色分配结果。
+  - `POST /projects/{drama_id}/assign-voices`（一键绑定）→ 若配了 LLM 用 `xg_voice_match` skill 按性别/年龄/性格分配；**没配 LLM 则用确定性回落**（按 role/personality 关键词的简单规则轮转预设），给每个还没音色的角色分配并落库；返回每角色分配结果。
 - 前端：角色台头部「一键绑定音频」按钮 + 每卡一个音色 `<select>`（值=voice_id），改选即 PATCH。client.ts 加 `listVoices/assignVoices/updateCharacterVoice`，`CharacterAsset` 加 `voice_id?`。
 - 不要求真合成音频；这是**绑定元数据**供后续 TTS/时间线用，注释写清楚。
 

@@ -48,6 +48,7 @@ def chat(
     timeout: float = 120.0,
     response_format: dict | None = None,
     tools: list[dict] | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
     """同步调用，返回完整响应字典 {content, tool_calls, finish_reason}。"""
     url = base_url.rstrip("/") + "/chat/completions"
@@ -58,6 +59,8 @@ def chat(
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
+    if max_tokens is not None and max_tokens > 0:
+        body["max_tokens"] = int(max_tokens)
     with httpx.Client(timeout=timeout) as c:
         r = c.post(url, json=body, headers=headers)
         r.raise_for_status()
@@ -78,9 +81,19 @@ def chat_text(
     temperature: float = 0.7,
     timeout: float = 120.0,
     response_format: dict | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """同步调用，仅返回文本内容（兼容旧接口）。"""
-    return chat(messages, base_url, api_key, model, temperature, timeout, response_format)["content"]
+    return chat(
+        messages,
+        base_url,
+        api_key,
+        model,
+        temperature,
+        timeout,
+        response_format,
+        max_tokens=max_tokens,
+    )["content"]
 
 
 async def chat_stream(

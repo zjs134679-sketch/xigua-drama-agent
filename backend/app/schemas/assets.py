@@ -30,8 +30,11 @@ class CharacterGenerateRequest(BaseModel):
     action: str | None = None
     node_id: int | None = None
     resolution: str | None = None
+    # 采样步数（H3 Turbo 固定 4；允许 4～50，后端对 Turbo LoRA 会钳到 4）
+    steps: int | None = Field(default=None, ge=4, le=50)
     extra: str | None = None
-    view_type: str = "full_body"  # 出图视角：full_body/headshot/side
+    # turnaround=三视图 / turnaround_head=三视图+头部特写 / full_body / headshot / side
+    view_type: str = "turnaround_head"
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -47,6 +50,8 @@ class SceneGenerateRequest(BaseModel):
     username: str | None = None
     node_id: int | None = None
     resolution: str | None = None
+    # 采样步数（场景底板；H3 Turbo 常用 4）
+    steps: int | None = Field(default=None, ge=4, le=50)
     extra: str | None = None
 
     @model_validator(mode="after")
@@ -63,6 +68,8 @@ class PropGenerateRequest(BaseModel):
     username: str | None = None
     node_id: int | None = None
     resolution: str | None = None
+    # 采样步数（道具定妆；H3 Turbo 常用 4）
+    steps: int | None = Field(default=None, ge=4, le=50)
     extra: str | None = None
 
     @model_validator(mode="after")

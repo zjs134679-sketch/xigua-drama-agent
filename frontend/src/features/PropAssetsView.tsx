@@ -7,6 +7,7 @@ import {
   listComputeNodes,
   listProjects,
   listProps,
+  mediaDisplayUrl,
   polishPrompt,
   updatePropPrompt,
   type ArtStyle,
@@ -20,8 +21,10 @@ import AssetGenerationControls from "../components/AssetGenerationControls";
 import AssetHistoryStrip from "../components/AssetHistoryStrip";
 import AdditionalInstructionField from "../components/AdditionalInstructionField";
 import ImageLightbox from "../components/ImageLightbox";
+import MediaUploadButton from "../components/MediaUploadButton";
 import { useBatchRun, type BatchOutcome } from "../components/useBatchRun";
 import { useSelection } from "../components/useSelection";
+import { followProjectStyleLabel, resolveStyleName } from "./styleHelpers";
 
 export default function PropAssetsView({
   currentDramaId,
@@ -39,6 +42,7 @@ export default function PropAssetsView({
   const [styleId, setStyleId] = useState<number | undefined>();
   const [nodes, setNodes] = useState<ComputeNodeRecord[]>([]);
   const [resolutions, setResolutions] = useState<Record<number, AssetResolution>>({});
+  const [stepsById, setStepsById] = useState<Record<number, number>>({});
   const [nodeIds, setNodeIds] = useState<Record<number, number | undefined>>({});
   const [generating, setGenerating] = useState<number | null>(null);
   const [extracting, setExtracting] = useState(false);
@@ -63,7 +67,11 @@ export default function PropAssetsView({
     }).catch((error: Error) => setNotice(error.message));
     listArtStyles().then(setStyles).catch(() => undefined);
     listComputeNodes().then(setNodes).catch(() => undefined);
+    setStyleId(undefined);
   }, [currentDramaId]);
+
+  const activeProject = projects.find((p) => p.id === projectId) ?? null;
+  const effectiveStyleLabel = resolveStyleName(styles, styleId, activeProject);
 
   const loadProps = (id: number) => listProps(id).then((rows) => {
     setProps(rows);
@@ -102,10 +110,22 @@ export default function PropAssetsView({
       const result = await polishPrompt({
         asset_type: "prop",
         prompt: prompts[prop.id] ?? "",
-        context: [prop.name, prop.type, prop.description].filter(Boolean).join("，"),
+        // 只给物件身份，不把描述里的场景句塞给润色模型当「上下文续写」
+        context: [prop.name, prop.type].filter(Boolean).join("，"),
       });
-      setPrompts((previous) => ({ ...previous, [prop.id]: result.polished }));
-      setNotice(`已润色「${prop.name}」的提示词`);
+      const polished = result.polished || "";
+      setPrompts((previous) => ({ ...previous, [prop.id]: polished }));
+      // 同步落库，避免刷新后又回到带环境的旧 prompt
+      try {
+        await updatePropPrompt(prop.id, polished);
+      } catch {
+        /* 生成仍可用本地 polished */
+      }
+      setNotice(
+        polished.includes("影棚") || polished.includes("浅灰")
+          ? `已润色「${prop.name}」：已固定影棚底板、去掉环境句`
+          : `已润色「${prop.name}」的提示词`,
+      );
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "润色失败");
     } finally {
@@ -122,7 +142,8 @@ export default function PropAssetsView({
         art_style_id: styleId,
         username,
         node_id: nodeIds[prop.id],
-        resolution: resolutions[prop.id] ?? "landscape_1024x576",
+        resolution: resolutions[prop.id] ?? "square_1024x1024",
+        steps: stepsById[prop.id] ?? 32,
         extra: extra.trim() || undefined,
       });
       return { ok: !result.blocked, message: result.blocked ? result.message ?? "提示词触发红线" : undefined };
@@ -186,18 +207,31 @@ export default function PropAssetsView({
   return (
     <div className="feature-view">
       <div className="feature-header">
-        <div><h2>道具资产</h2><p>从剧本提取道具，生成可复用参考图</p></div>
+        <div>
+          <h2>道具资产</h2>
+          <p>从剧本提取道具，生成可复用参考图 · 当前出图画风：<strong style={{ color: "var(--green-t)" }}>{effectiveStyleLabel}</strong></p>
+        </div>
         <div className="feature-filters">
           <button className="btn-primary" style={{ width: "auto", padding: "6px 14px" }} disabled={extracting} onClick={extract} title="从当前分集的剧本/原文中提取角色、场景、道具">
             {extracting ? <LoaderCircle className="spin" size={14} /> : <Wand2 size={14} />} AI 提取道具
           </button>
-          <select value={projectId ?? ""} onChange={(event) => setProjectId(Number(event.target.value))}>
+          <select
+            value={projectId ?? ""}
+            onChange={(event) => {
+              setProjectId(Number(event.target.value));
+              setStyleId(undefined);
+            }}
+          >
             {!projects.length && <option value="">暂无项目</option>}
             {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
           </select>
-          <select value={styleId ?? ""} onChange={(event) => setStyleId(event.target.value ? Number(event.target.value) : undefined)}>
-            <option value="">默认画风</option>
-            {styles.map((style) => <option key={style.id} value={style.id}>{style.name}</option>)}
+          <select
+            value={styleId ?? ""}
+            onChange={(event) => setStyleId(event.target.value ? Number(event.target.value) : undefined)}
+            title="默认跟随项目画风"
+          >
+            <option value="">{followProjectStyleLabel(activeProject)}</option>
+            {styles.map((style) => <option key={style.id} value={style.id}>{style.name}（仅本次出图）</option>)}
           </select>
         </div>
       </div>
@@ -227,7 +261,18 @@ export default function PropAssetsView({
                   <label style={{ position: "absolute", left: 6, top: 6, zIndex: 2, display: "flex", cursor: "pointer", background: "var(--bg)", borderRadius: 4, padding: 3, lineHeight: 0 }} title="选择此道具（用于批量生成）">
                     <input type="checkbox" checked={picked} onChange={() => sel.toggle(prop.id)} disabled={batch.running} />
                   </label>
-                  {prop.image_url ? <img src={prop.image_url} alt={prop.name} onClick={() => setPreview(prop.image_url)} style={{ cursor: "zoom-in" }} title="点击放大预览" /> : <Image size={30} />}
+                  {prop.image_url ? (
+                    <img
+                      key={prop.image_url}
+                      src={mediaDisplayUrl(prop.image_url)}
+                      alt={prop.name}
+                      onClick={() => setPreview(mediaDisplayUrl(prop.image_url))}
+                      style={{ cursor: "zoom-in", width: "100%", height: "100%", objectFit: "cover" }}
+                      title="点击放大预览"
+                    />
+                  ) : (
+                    <Image size={30} />
+                  )}
                   {generating === prop.id && <span style={{ position: "absolute", right: 6, top: 6, zIndex: 2, color: "var(--green-t)" }}><LoaderCircle className="spin" size={16} /></span>}
                 </div>
                 <AssetHistoryStrip
@@ -254,17 +299,47 @@ export default function PropAssetsView({
                     </button>
                   </div>
                   <AssetGenerationControls
-                    resolution={resolutions[prop.id] ?? "landscape_1024x576"}
+                    variant="prop"
+                    resolution={resolutions[prop.id] ?? "square_1024x1024"}
+                    steps={stepsById[prop.id] ?? 4}
                     nodeId={nodeIds[prop.id]}
                     nodes={nodes}
                     disabled={batch.running}
                     onResolutionChange={(value) => setResolutions((previous) => ({ ...previous, [prop.id]: value }))}
+                    onStepsChange={(value) => setStepsById((previous) => ({ ...previous, [prop.id]: value }))}
                     onNodeChange={(value) => setNodeIds((previous) => ({ ...previous, [prop.id]: value }))}
                   />
-                  <div style={{ display: "flex", gap: 6 }}>
+                  <p style={{ margin: "0 0 6px", fontSize: 11, color: "var(--text3)" }}>
+                    道具可调<strong>分辨率 + 采样步数</strong>。出图会<strong>自动删掉提示词里的桌面/战场/房间等环境句</strong>，
+                    并强制<strong>浅灰/纯白影棚底板</strong>（与人物定装同类）。若旧提示词含场景，重新生成即可。
+                  </p>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     <button className="btn-secondary" style={{ flex: "none", padding: "5px 10px" }} disabled={saving != null || batch.running} onClick={() => savePrompt(prop)} title="只保存提示词，不出图">
                       {saving === prop.id ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} 保存
                     </button>
+                    <MediaUploadButton
+                      targetType="prop"
+                      targetId={prop.id}
+                      username={username}
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      label=" 上传图"
+                      title="从本机上传道具参考图"
+                      disabled={batch.running}
+                      style={{ flex: "none", padding: "5px 10px" }}
+                      onDone={async (r) => {
+                        const raw = r.image_url || r.url;
+                        setProps((prev) => prev.map((item) => (item.id === prop.id ? { ...item, image_url: raw } : item)));
+                        if (projectId != null) {
+                          try {
+                            await loadProps(projectId);
+                          } catch {
+                            /* ignore */
+                          }
+                        }
+                        setNotice("道具图已上传并刷新");
+                      }}
+                      onError={(m) => setNotice(m)}
+                    />
                     <button className="btn-secondary" style={{ flex: 1 }} disabled={generating != null || batch.running} onClick={() => generate(prop)}>
                       {generating === prop.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
                       {prop.image_url ? "重新生成" : "生成道具图"}

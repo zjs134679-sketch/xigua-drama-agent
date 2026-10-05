@@ -1,0 +1,277 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNETLoader MiniMax H3 fl2va (Turbo)"
+    },
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "LoraLoaderBypassModelOnly",
+    "_meta": {
+      "title": "Turbo 4-step LoRA (EMA)"
+    },
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "minimax_h3_turbo_4步加速ema_comfyui.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "3": {
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "CLIPLoader minimax"
+    },
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Video VAE"
+    },
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Audio VAE"
+    },
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+  },
+  "101": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Ref Picture 1"
+    },
+    "inputs": {
+      "image": "xigua_minimax_h3_t2i_00058_.png",
+      "upload": "image"
+    }
+  },
+  "102": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Ref Picture 2"
+    },
+    "inputs": {
+      "image": "xigua_minimax_h3_t2i_00043_.png",
+      "upload": "image"
+    }
+  },
+  "103": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Ref Picture 3"
+    },
+    "inputs": {
+      "image": "xigua_minimax_h3_t2i_00025_.png",
+      "upload": "image"
+    }
+  },
+  "104": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Ref Picture 4"
+    },
+    "inputs": {
+      "image": "ref4.png",
+      "upload": "image"
+    }
+  },
+  "105": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Ref Picture 5"
+    },
+    "inputs": {
+      "image": "ref5.png",
+      "upload": "image"
+    }
+  },
+  "106": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Ref Picture 6"
+    },
+    "inputs": {
+      "image": "ref6.png",
+      "upload": "image"
+    }
+  },
+  "6": {
+    "class_type": "MiniMaxH3AudioConditioningT8",
+    "_meta": {
+      "title": "H3 R2V multi-ref (Turbo Stable 4V4A)"
+    },
+    "inputs": {
+      "clip": [
+        "3",
+        0
+      ],
+      "video_vae": [
+        "4",
+        0
+      ],
+      "audio_vae": [
+        "5",
+        0
+      ],
+      "prompt": "<Picture 1> 是角色定妆参考（角色：老周）：锁定脸、发型、服装与体型身份。 <Picture 2> 是角色定妆参考（角色：女孩）：锁定脸、发型、服装与体型身份。 <Picture 3> 是场景/环境参考（场景：邮局）：锁定建筑、光线、空间，忽略参考图中多余路人。 0-3秒：清晨，老邮局门口，日光斜照，门铃叮当一响。中景平视固定镜头，老周闻声抬头，一个穿米色外套的年轻女孩抱着半人高的纸箱站在门口，纸箱边缘露出几封泛黄的信。逆光剪影，暖调，画面干净无文字。 景别中景，机位平视，运镜固定，动作：门铃叮当一响，老周抬起头，一个穿米色外套的年轻女孩抱着半人高的纸箱站在门口，纸箱边缘露出几封泛黄的信，气氛逆光剪影，暖调 严格遵守首帧画面中的人物数量与身份：不要新增角色，不要克隆脸，不要多人等大横排站立，不要角色设定图/三视图，不要无关路人飘入前景 画面干净无叠加层：不要字幕、花字、标题、说明文字、汉字、字母、数字、水印、logo、签名、角标、进度条；不要二维码、条形码、微信码、扫码框、黑白小方块码 真人写实摄影，电影剧照，当代中国都市，自然光逻辑清晰，皮肤纹理真实，生活现场感。真人写实,当代中国都市,电影剧照,自然光,皮肤纹理,生活痕迹,无二次元,无CG感。【视频阶段】动作时间片不超过本镜秒数；运镜可写清起幅落幅；保持画风标签。禁止：二次元/插画/3D渲染感、古装仙侠、过度磨皮蜡像脸、水印文字UI、任何可读水印、字幕条、手机 UI、二维码、水印、UI边框。真人都市短剧,自然光,纪实手持,生活痕迹 no subtitles, no on-screen text, no watermark, no qr code, clear natural speech audio",
+      "width": 768,
+      "height": 416,
+      "length": 73,
+      "task_type": "Ref2VA",
+      "audio_mode": "native",
+      "audio_denoise_strength": 1.0,
+      "add_source_as_reference": false,
+      "prompt_primary_audio_ordinal": 0,
+      "strict_prompt_tags": true,
+      "ref_image_size": "match",
+      "reference_video_policy": "official_2_to_15s",
+      "ref_images.ref_image_0": [
+        "101",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "102",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "103",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "MiniMaxH3DualClockSamplerT8",
+    "_meta": {
+      "title": "STABLE 4 video / 4 audio"
+    },
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "av_latent": [
+        "6",
+        1
+      ],
+      "steps": 4,
+      "shift_video": 12.0,
+      "shift_audio": 3.0
+    }
+  },
+  "8": {
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "BasicGuider"
+    },
+    "inputs": {
+      "model": [
+        "7",
+        0
+      ],
+      "conditioning": [
+        "6",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    },
+    "inputs": {
+      "noise_seed": 1193158905
+    }
+  },
+  "10": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    },
+    "inputs": {
+      "noise": [
+        "9",
+        0
+      ],
+      "guider": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "7",
+        1
+      ],
+      "sigmas": [
+        "7",
+        2
+      ],
+      "latent_image": [
+        "6",
+        1
+      ]
+    }
+  },
+  "11": {
+    "class_type": "MiniMaxH3AVDecodeT8",
+    "_meta": {
+      "title": "AV Decode"
+    },
+    "inputs": {
+      "av_latent": [
+        "10",
+        0
+      ],
+      "video_vae": [
+        "4",
+        0
+      ],
+      "audio_vae": [
+        "5",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "Save synchronized MP4"
+    },
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ],
+      "audio": [
+        "11",
+        1
+      ],
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "xigua_r2v",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true
+    }
+  }
+}

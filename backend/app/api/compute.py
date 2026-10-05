@@ -80,8 +80,41 @@ def _node_payload(row: ComputeNodeRow) -> dict:
 
 @router.get("/health")
 async def compute_health(db: Session = Depends(get_db)) -> dict:
-    node = get_active_node(db)
-    return {"type": node.type, "base_url": node.base_url, "online": await node.health()}
+    from app.services.compute.registry import describe_compute_readiness
+
+    image_node = get_active_node(db, capability="image")
+    video_node = get_active_node(db, capability="video")
+    image_online = await image_node.health()
+    video_online = await video_node.health()
+    # 兼容旧字段：任一路在线即 online
+    primary = image_node if image_online else video_node
+    readiness = describe_compute_readiness(db)
+    return {
+        "type": primary.type,
+        "base_url": primary.base_url,
+        "online": image_online or video_online,
+        "image": {
+            "type": image_node.type,
+            "base_url": getattr(image_node, "base_url", None),
+            "provider": getattr(image_node, "provider", None),
+            "online": image_online,
+        },
+        "video": {
+            "type": video_node.type,
+            "base_url": getattr(video_node, "base_url", None),
+            "provider": getattr(video_node, "provider", None),
+            "online": video_online,
+        },
+        "readiness": readiness,
+    }
+
+
+@router.get("/diagnose")
+async def compute_diagnose(node_id: int | None = None, db: Session = Depends(get_db)) -> dict:
+    """检测 Comfy 连通性与 LTX/Wan/Flux 关键模型是否疑似齐全。"""
+    from app.services.comfy_diagnostics import diagnose_comfy
+
+    return await diagnose_comfy(db, node_id=node_id)
 
 
 @router.get("/nodes")
@@ -111,8 +144,8 @@ async def text2image(req: Text2ImageRequest, db: Session = Depends(get_db)):
             },
         )
 
-    # 2. 送算力节点生成
-    node = get_active_node(db)
+    # 2. 送算力节点生成（优先会出图的节点：云万相 / Comfy）
+    node = get_active_node(db, capability="image")
     job = ImageJob(
         prompt=req.prompt,
         negative=req.negative,
@@ -141,6 +174,44 @@ async def text2image(req: Text2ImageRequest, db: Session = Depends(get_db)):
 
 from app.schemas.compute import ComputeNodeCreate, ComputeNodeUpdate  # noqa: E402
 from app.services.compute.registry import build_node  # noqa: E402
+
+
+from pydantic import BaseModel, Field  # noqa: E402
+
+
+class CloudQuickSetupBody(BaseModel):
+    wan_api_key: str | None = None
+    seedance_api_key: str | None = None
+    wan_model: str | None = None
+    seedance_model: str | None = None
+    deactivate_comfy: bool = False
+    test_connection: bool = True
+
+
+@router.get("/cloud-status", tags=["nodes"])
+def cloud_status(db: Session = Depends(get_db)) -> dict:
+    from app.services.cloud_quick_setup import cloud_status as _status
+
+    return _status(db)
+
+
+@router.post("/cloud-quick-setup", tags=["nodes"])
+async def cloud_quick_setup(body: CloudQuickSetupBody, db: Session = Depends(get_db)) -> dict:
+    """小白：填通义/豆包 Key → 自动建云出图+云出片节点。"""
+    from app.services.cloud_quick_setup import quick_setup_cloud
+
+    try:
+        return await quick_setup_cloud(
+            db,
+            wan_api_key=body.wan_api_key,
+            seedance_api_key=body.seedance_api_key,
+            wan_model=body.wan_model,
+            seedance_model=body.seedance_model,
+            deactivate_comfy=body.deactivate_comfy,
+            test_connection=body.test_connection,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post('/nodes', tags=['nodes'])
@@ -196,7 +267,122 @@ def delete_node(node_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='Node not found')
     db.delete(row)
     db.commit()
-    return {'deleted': True}
+    return {"ok": True}
+
+
+class ComfyExportBody(BaseModel):
+    """导出调试工作流到 ComfyUI。"""
+    comfy_user_dir: str | None = None
+
+
+class ComfySyncBody(BaseModel):
+    """从 Comfy history 或本地工作流文件同步参数。"""
+    source: str = Field(default="history", description="history | file")
+    file_path: str | None = None
+    apply: bool = True  # 是否写回节点 model_settings
+
+
+@router.post("/nodes/{node_id}/export-comfy-workflows", tags=["nodes"])
+def export_comfy_workflows(node_id: int, body: ComfyExportBody | None = None, db: Session = Depends(get_db)):
+    """导出「角色出图 + 多参考视频」两个 API 工作流到 ComfyUI workflows，便于界面调试。"""
+    from app.services.comfy_workflow_sync import export_debug_workflows
+
+    row = db.query(ComputeNodeRow).filter(ComputeNodeRow.id == node_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if row.type not in ("local_comfy", "remote_comfy"):
+        raise HTTPException(400, "仅本地/远程 Comfy 节点支持导出调试工作流")
+    extra = _extra_payload(row)
+    ms = extra.get("model_settings") if isinstance(extra.get("model_settings"), dict) else {}
+    body = body or ComfyExportBody()
+    try:
+        result = export_debug_workflows(
+            model_settings=ms,
+            comfy_user_dir_hint=body.comfy_user_dir or ms.get("comfy_user_dir"),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    # 记住 comfy 目录
+    if result.get("comfy_workflows_dir"):
+        ms = dict(ms)
+        # 存 user/default 根，便于下次
+        from pathlib import Path as _P
+
+        wdir = _P(result["comfy_workflows_dir"])
+        ms["comfy_user_dir"] = str(wdir)
+        row.extra = _merge_extra(row.extra, model_settings=ms)
+        db.commit()
+    return result
+
+
+@router.post("/nodes/{node_id}/sync-comfy-params", tags=["nodes"])
+async def sync_comfy_params(node_id: int, body: ComfySyncBody, db: Session = Depends(get_db)):
+    """从 Comfy 最近任务或工作流文件读取参数，可选写回算力节点 model_settings。"""
+    from app.services.comfy_workflow_sync import (
+        extract_from_workflow_file,
+        fetch_latest_history_params,
+        params_to_model_settings,
+    )
+
+    row = db.query(ComputeNodeRow).filter(ComputeNodeRow.id == node_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if row.type not in ("local_comfy", "remote_comfy"):
+        raise HTTPException(400, "仅 Comfy 节点可同步参数")
+
+    extra = _extra_payload(row)
+    ms = extra.get("model_settings") if isinstance(extra.get("model_settings"), dict) else {}
+
+    if body.source == "file":
+        if not body.file_path:
+            raise HTTPException(400, "请提供 file_path")
+        try:
+            extracted = extract_from_workflow_file(body.file_path)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"读取工作流失败: {exc}") from exc
+        if not extracted.get("ok"):
+            raise HTTPException(400, extracted.get("message") or "解析失败")
+        params = extracted.get("params") or {}
+        source_info = extracted.get("source")
+    else:
+        if not row.base_url:
+            raise HTTPException(400, "节点未配置 base_url")
+        try:
+            extracted = await fetch_latest_history_params(row.base_url, token=row.token)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"连接 Comfy 失败: {exc}") from exc
+        if not extracted.get("ok"):
+            return {
+                "ok": False,
+                "message": extracted.get("message") or "同步失败",
+                "detail": extracted,
+            }
+        params = extracted.get("params") or {}
+        source_info = extracted.get("prompt_id")
+
+    merged = params_to_model_settings(params, ms)
+    applied = False
+    if body.apply:
+        row.extra = _merge_extra(row.extra, model_settings=merged)
+        db.commit()
+        db.refresh(row)
+        applied = True
+
+    return {
+        "ok": True,
+        "applied": applied,
+        "source": body.source,
+        "source_info": source_info,
+        "params": params,
+        "model_settings": merged,
+        "node": _node_payload(row) if applied else None,
+        "message": (
+            "已写回算力节点：角色出图/默认步数与尺寸将采用同步值；"
+            "角色卡片仍可单独再调更高分辨率。"
+            if applied
+            else "已解析参数（未写回，apply=false）"
+        ),
+    }
 
 
 @router.post('/nodes/{node_id}/test', tags=['nodes'])

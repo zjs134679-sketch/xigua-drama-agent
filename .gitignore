@@ -16,6 +16,15 @@ dist/
 .uv-cache/
 _update-notifier-last-checked
 
+# Nuitka / 后端构建产物（体积巨大，勿入仓）
+backend/dist/
+backend/**/server_entry.build/
+backend/**/server_entry.dist/
+backend/**/server_entry.onefile-build/
+*.build/
+*.onefile-build/
+ccache-*.txt
+
 # Rust / Tauri
 src-tauri/target/
 
@@ -42,3 +51,18 @@ auth-server/secret_dict/*.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# 安装包 / 发布产物（走 GitHub Release 分发，不入 git）
+/anzhuangbao/
+/release/
+/installer/
+
+# 测试/导出视频散落在源码目录
+backend/episode-*.mp4
+
+# SQLite 运行时文件（含真实授权数据，严禁入仓）
+auth-server/*.db-shm
+auth-server/*.db-wal
+
+# 敏感词库规则（含合规敏感内容，严禁入仓）
+auth-server/卡过审-词库规则.txt

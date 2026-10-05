@@ -5,7 +5,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data" / "skills"
+from app.core.paths import skills_data_dir
+
+DATA_DIR = skills_data_dir()
 AGENT_SKILLS_DIR = Path(__file__).resolve().parent / "agents" / "skills"
 
 
@@ -81,17 +83,25 @@ def list_story_types() -> list[dict]:
     return [s.to_dict() for s in _scan_dir(DATA_DIR / "story_types", "story_type")]
 
 
+def list_art_styles() -> list[dict]:
+    """画风技能库（data/skills/art_styles 文件驱动）。"""
+    return [s.to_dict() for s in _scan_dir(DATA_DIR / "art_styles", "art_style")]
+
+
 def list_agent_skills() -> list[dict]:
     return [s.to_dict() for s in _scan_dir(AGENT_SKILLS_DIR, "agent")]
 
 
 def list_all_skills() -> list[dict]:
-    return list_story_types() + list_agent_skills()
+    return list_story_types() + list_art_styles() + list_agent_skills()
 
 
 def get_skill(name: str, category: str = "story_type") -> dict | None:
     if category == "story_type":
         base = DATA_DIR / "story_types"
+    elif category in ("art_style", "art_styles"):
+        base = DATA_DIR / "art_styles"
+        category = "art_style"
     elif category == "agent":
         base = AGENT_SKILLS_DIR
     else:
@@ -107,8 +117,37 @@ def get_skill(name: str, category: str = "story_type") -> dict | None:
         "description": meta.get("description", ""),
         "category": category,
         "tags": meta.get("tags", []),
+        "prompt_suffix": meta.get("prompt_suffix", ""),
+        "sort_order": meta.get("sort_order"),
         "content": _content_without_frontmatter(text),
+        "raw": text,
     }
+
+
+def save_skill(name: str, category: str, content: str) -> dict:
+    """在线保存 Skill Markdown（仅允许已有目录，防止任意写路径）。"""
+    if category == "story_type":
+        base = DATA_DIR / "story_types"
+    elif category in ("art_style", "art_styles"):
+        base = DATA_DIR / "art_styles"
+        category = "art_style"
+    elif category == "agent":
+        base = AGENT_SKILLS_DIR
+    else:
+        raise ValueError("不支持的 category")
+    # 仅安全名
+    if not name or ".." in name or "/" in name or "\\" in name:
+        raise ValueError("非法技能名")
+    folder = base / name
+    if not folder.is_dir():
+        raise LookupError(f"技能目录不存在: {category}/{name}")
+    md = folder / "SKILL.md"
+    text = content if content.endswith("\n") else content + "\n"
+    md.write_text(text, encoding="utf-8")
+    skill = get_skill(name, category)
+    if skill is None:
+        raise RuntimeError("保存后读取失败")
+    return skill
 
 
 def search_skills(query: str) -> list[dict]:
