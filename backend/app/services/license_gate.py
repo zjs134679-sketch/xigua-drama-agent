@@ -23,7 +23,7 @@ async def require_valid_license(
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, detail="需要登录授权后才能使用此功能")
 
-    # 1) 优先验本地能力票（工业加固：短时效 + 机器绑定 + HS256）
+    # 1) 优先验本地能力票（工业加固：短时效 + 机器绑定 + Ed25519 公钥验签）
     cap = verify_capability(x_capability, machine_id=x_machine_id)
     if cap is not None:
         return {

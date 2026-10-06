@@ -10,3 +10,4 @@ pypinyin>=0.53
 pytest>=8.3
 
 pyjwt>=2.9
+cryptography>=41  # 能力票 Ed25519 公钥验签（A2）

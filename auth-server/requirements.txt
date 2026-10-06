@@ -3,3 +3,4 @@ uvicorn[standard]>=0.34
 sqlalchemy>=2.0
 pydantic>=2.9
 pyjwt>=2.9
+cryptography>=41  # 能力票 Ed25519 签发/验签（A2）

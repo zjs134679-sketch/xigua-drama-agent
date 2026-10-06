@@ -56,7 +56,10 @@ class Settings(BaseSettings):
 
     # 云端认证服务（注册/登录/封号/授权加密）
     auth_server_url: str = "http://127.0.0.1:8100"
-    # 与 auth-server 共享的签名密钥（能力票验签）；生产必须更换
+    # 能力票验签公钥（Ed25519，base64，32 字节原始公钥）：由构建脚本从 auth-server 私钥派生填入。
+    # 客户端不再持有任何签名密钥（A2 修复）；旧 HS256 能力票作废。
+    capability_pubkey: str = ""
+    # 遗留字段：auth-server 访问令牌仍用该密钥 HS256 签发（服务端自验）；客户端不再需要它。
     auth_secret: str = "dev-secret-change-me-in-prod"
     # 生产打包设 true：生成类接口要求有效 JWT/能力票 且 license_active
     license_enforce: bool = False
