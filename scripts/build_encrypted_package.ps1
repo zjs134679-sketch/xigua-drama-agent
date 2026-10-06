@@ -29,8 +29,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " 西瓜短剧Agent — 加密安装包构建" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "版本: $Version"
-Write-Host "密码: $Password"
 Write-Host "输出: $OutputDir"
+Write-Host "（安装密码仅写入 密码-请妥善保管.txt，不在控制台显示）" -ForegroundColor Gray
 Write-Host "========================================" -ForegroundColor Cyan
 
 # ---------- 1. 准备输出目录 ----------
@@ -184,6 +184,22 @@ if (-not (Test-Path `$encFile)) {
     exit 1
 }
 
+# A1 修复：安装密码不再嵌入脚本，安装时向用户索取（密码通过密码文件线下交付）
+Write-Host ""
+`$secPwd = Read-Host "请输入安装密码" -AsSecureString
+if (-not `$secPwd) {
+    Write-Host "未输入密码，安装取消。" -ForegroundColor Red
+    pause
+    exit 1
+}
+`$__ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR(`$secPwd)
+try {
+    `$installPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(`$__ptr)
+} finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$__ptr)
+}
+`$secPwd = `$null
+
 Write-Host "正在解密安装包..." -ForegroundColor Yellow
 
 `$encBytes = [System.IO.File]::ReadAllBytes(`$encFile)
@@ -192,8 +208,10 @@ Write-Host "正在解密安装包..." -ForegroundColor Yellow
 `$ciphertext = `$encBytes[32..(`$encBytes.Length - 1)]
 
 `$derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
-    "$Password", `$salt, 100000)
+    `$installPassword, `$salt, 100000)
 `$key = `$derive.GetBytes(32)
+`$derive.Dispose()
+`$installPassword = `$null
 
 `$aes = [System.Security.Cryptography.Aes]::Create()
 `$aes.KeySize = 256
@@ -352,6 +370,5 @@ Write-Host "  1. $packageName.enc  （加密安装包）" -ForegroundColor White
 Write-Host "  2. 安装-西瓜短剧Agent.bat  （双击运行安装）" -ForegroundColor White
 Write-Host "  3. 安装-西瓜短剧Agent.ps1  （安装脚本）" -ForegroundColor White
 Write-Host ""
-Write-Host "安装密码: $Password" -ForegroundColor Yellow
-Write-Host "（密码已保存到 密码-请妥善保管.txt）" -ForegroundColor Yellow
+Write-Host "安装密码已保存到 密码-请妥善保管.txt（请线下单独交付用户）" -ForegroundColor Yellow
 Write-Host ""

@@ -18,6 +18,9 @@ def load_auth_app(tmp_db: Path | None = None) -> FastAPI:
         # 这里用临时目录复制逻辑——直接改环境后在 main 支持 XIGUA_AUTH_DB。
         os.environ["XIGUA_AUTH_DB"] = str(tmp_db)
     os.environ.setdefault("XIGUA_LICENSE_REQUIRED", "1")
+    # A5 修复后：auth-server 无有效密钥直接拒绝启动，测试先注入测试密钥
+    os.environ.setdefault("XIGUA_AUTH_SECRET", "test-secret")
+    os.environ.setdefault("XIGUA_ADMIN_SECRET", "test-admin-secret")
     # 授权服务已迁至独立卡密平台目录
     candidates = [
         Path(r"E:\xigua Agent  密码管理\auth-server\app\main.py"),

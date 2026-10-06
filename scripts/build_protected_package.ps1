@@ -5,22 +5,34 @@
 param(
     [string]$OutputDir = "E:\xigua-drama-agent\anzhuangbao",
     [string]$ReleaseDir = "E:\xigua-drama-agent\release",
-    [string]$Version = "0.1.2"
+    [string]$Version = "0.1.2",
+    [string]$Password = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-# ---------- 密码生成 ----------
+# ---------- 密码处理（A1 修复） ----------
+# 安装密码是唯一的密钥来源：vault 密钥与外层安装包密钥均由它经 PBKDF2 派生，
+# 构建产物（安装脚本/启动器）中不再嵌入任何密钥材料；密码仅写入密码文件线下交付。
 $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-$keyBytes = New-Object byte[] 32
+if (-not $Password) {
+    # 生成强密码（16 字节 → 32 hex）
+    $pwBytes = New-Object byte[] 16
+    $rng.GetBytes($pwBytes)
+    $Password = ($pwBytes | ForEach-Object { $_.ToString("x2") }) -join ""
+}
+$vaultSalt = New-Object byte[] 16
 $ivBytes = New-Object byte[] 16
-$rng.GetBytes($keyBytes)
+$rng.GetBytes($vaultSalt)
 $rng.GetBytes($ivBytes)
-$installPassword = ($keyBytes | ForEach-Object { $_.ToString("x2") }) -join ""
+$__vd = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $vaultSalt, 100000)
+$keyBytes = $__vd.GetBytes(32)
+$__vd.Dispose()
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " 西瓜短剧Agent — 受保护安装包构建 v2" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
+Write-Host " （安装密码仅写入 密码-请妥善保管.txt，不在控制台显示）" -ForegroundColor Gray
 
 # ---------- 1. 准备输出 ----------
 Write-Host "`n[1/6] 准备..." -ForegroundColor Yellow
@@ -141,9 +153,10 @@ $encryptor = $aes.CreateEncryptor()
 $encryptedZip = $encryptor.TransformFinalBlock($zipBytes, 0, $zipBytes.Length)
 $aes.Dispose()
 
-# vault.dat = [IV(16)][ciphertext]
+# vault.dat = [vaultSalt(16)][IV(16)][ciphertext]（salt 公开，仅用于密钥派生）
 $vaultPath = "$staging\xigua-vault.dat"
 $fs = [System.IO.File]::OpenWrite($vaultPath)
+$fs.Write($vaultSalt, 0, 16)
 $fs.Write($ivBytes, 0, 16)
 $fs.Write($encryptedZip, 0, $encryptedZip.Length)
 $fs.Close()
@@ -162,18 +175,8 @@ foreach ($f in $vaultFiles) {
 # ---------- 5. 生成运行时解密启动器 ----------
 Write-Host "[5/6] 生成受保护启动器..." -ForegroundColor Yellow
 
-# 将密钥拆分为 8 段，Base64 编码，启动时动态拼接
-$keyStr = [Convert]::ToBase64String($keyBytes)
-$parts = @()
-$splitSize = [math]::Ceiling($keyStr.Length / 8)
-for ($i = 0; $i -lt 8; $i++) {
-    $chunk = $keyStr.Substring($i * $splitSize, [math]::Min($splitSize, $keyStr.Length - $i * $splitSize))
-    $parts += $chunk
-}
-# 打乱顺序
-$order = @(3, 6, 1, 7, 0, 5, 2, 4)  # 固定排列
-$shuffled = @(0..7)
-for ($i = 0; $i -lt 8; $i++) { $shuffled[$i] = $parts[$order[$i]] }
+# A1 修复：不再把 vault 密钥分段嵌入 launch.ps1。
+# 密钥由安装密码派生，安装脚本经 DPAPI 落盘（见安装脚本模板）；launch.ps1 运行时解密使用。
 
 # 生成受保护的 launch.ps1
 $launchPs1 = @'
@@ -198,18 +201,20 @@ function Write-Log([string]$M) {
 
 function Decrypt-Vault {
     Write-Log "decrypt vault..."
-    # === 密钥重组（分段混淆）===
-    $k0 = 'PLACEHOLDER_K0'
-    $k1 = 'PLACEHOLDER_K1'
-    $k2 = 'PLACEHOLDER_K2'
-    $k3 = 'PLACEHOLDER_K3'
-    $k4 = 'PLACEHOLDER_K4'
-    $k5 = 'PLACEHOLDER_K5'
-    $k6 = 'PLACEHOLDER_K6'
-    $k7 = 'PLACEHOLDER_K7'
-    # 按正确顺序拼接
-    $joined = $k0 + $k1 + $k2 + $k3 + $k4 + $k5 + $k6 + $k7
-    $keyBytes = [Convert]::FromBase64String($joined)
+    # === A1 修复：vault 密钥不再嵌入脚本 ===
+    # 安装时由安装密码派生，经 Windows DPAPI（当前用户）保护后落盘到 vault.key；
+    # 此处用 DPAPI 解保护后使用。更换 Windows 用户或删除 key 文件后需重新安装。
+    # 注：用 [Environment]::GetFolderPath 而不用 $env:LOCALAPPDATA，
+    #     是为了避开本构建脚本混淆器对 "$e" 的误替换（预先存在的混淆 bug，未在本次改动）。
+    $keyFile = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "XiguaDramaAgent\vault.key"
+    if (-not (Test-Path $keyFile)) {
+        throw "找不到 vault 密钥文件（vault.key），请重新运行安装程序"
+    }
+    Add-Type -AssemblyName System.Security
+    $protected = [System.IO.File]::ReadAllBytes($keyFile)
+    $keyBytes = [Security.Cryptography.ProtectedData]::Unprotect(
+        $protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [Array]::Clear($protected, 0, $protected.Length)
 
     $vaultPath = Join-Path $AppDir "xigua-vault.dat"
     if (-not (Test-Path $vaultPath)) {
@@ -217,8 +222,9 @@ function Decrypt-Vault {
     }
 
     $raw = [System.IO.File]::ReadAllBytes($vaultPath)
-    $iv = $raw[0..15]
-    $cipher = $raw[16..($raw.Length - 1)]
+    # vault.dat = [vaultSalt(16)][IV(16)][ciphertext]；salt 仅安装时派生用，运行时不需要
+    $iv = $raw[16..31]
+    $cipher = $raw[32..($raw.Length - 1)]
 
     $aes = [System.Security.Cryptography.Aes]::Create()
     $aes.KeySize = 256
@@ -367,30 +373,7 @@ try {
 }
 '@
 
-# 将密钥拆为 4 段嵌入启动器
-$keyB64 = [Convert]::ToBase64String($keyBytes)
-# 确保每段长度一致（Base64 不含 = 的纯字符部分）
-$keyClean = $keyB64.TrimEnd('=')
-$chunkLen = [math]::Floor($keyClean.Length / 4)
-$kp = @()
-$kp += $keyClean.Substring(0, $chunkLen)
-$kp += $keyClean.Substring($chunkLen, $chunkLen)
-$kp += $keyClean.Substring($chunkLen * 2, $chunkLen)
-$kp += $keyClean.Substring($chunkLen * 3)  # 剩余全部（含尾部）
-
-# 替换占位符
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K0', "'$($kp[0])'")
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K1', "'$($kp[1])'")
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K2', "'$($kp[2])'")
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K3', "'$($kp[3])'")
-# k4-k7 填空串（不用）
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K4', "''")
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K5', "''")
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K6', "''")
-$launchPs1 = $launchPs1.Replace('PLACEHOLDER_K7', "''")
-
-# 更新 launcher 中的拼接为只用 4 段
-$launchPs1 = $launchPs1.Replace('$k0 + $k1 + $k2 + $k3 + $k4 + $k5 + $k6 + $k7', '$k0 + $k1 + $k2 + $k3')
+# A1 修复：不再向 launch.ps1 嵌入密钥（改为安装时索取密码 + DPAPI 落盘），占位符机制已删除
 
 # 对 launch.ps1 本身做轻量混淆
 $obfuscatedLaunch = $launchPs1
@@ -454,12 +437,14 @@ $finalZip = "$OutputDir\_final.zip"
 
 $zipBytes = [System.IO.File]::ReadAllBytes($finalZip)
 
-# AES-256 加密整个安装包
-$pkgKey = New-Object byte[] 32
+# AES-256 加密整个安装包（A1 修复：密钥由安装密码 PBKDF2 派生，不再随机生成后嵌入安装脚本）
+$pkgSalt = New-Object byte[] 16
 $pkgIV = New-Object byte[] 16
-$rng.GetBytes($pkgKey)
+$rng.GetBytes($pkgSalt)
 $rng.GetBytes($pkgIV)
-$pkgPassword = ($pkgKey | ForEach-Object { $_.ToString("x2") }) -join ""
+$__pd = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $pkgSalt, 100000)
+$pkgKey = $__pd.GetBytes(32)
+$__pd.Dispose()
 
 $aes2 = [System.Security.Cryptography.Aes]::Create()
 $aes2.KeySize = 256
@@ -471,8 +456,10 @@ $enc = $aes2.CreateEncryptor()
 $encryptedZip = $enc.TransformFinalBlock($zipBytes, 0, $zipBytes.Length)
 $aes2.Dispose()
 
+# .enc = [pkgSalt(16)][IV(16)][ciphertext]（salt 公开，仅用于密钥派生）
 $encPath = "$OutputDir\西瓜短剧Agent-Setup-$Version.enc"
 $fs = [System.IO.File]::OpenWrite($encPath)
+$fs.Write($pkgSalt, 0, 16)
 $fs.Write($pkgIV, 0, 16)
 $fs.Write($encryptedZip, 0, $encryptedZip.Length)
 $fs.Close()
@@ -528,14 +515,29 @@ if (-not (Test-Path `$EF)) { Write-Host "找不到加密包！" -ForegroundColor
 
 `$ID = "`$env:LOCALAPPDATA\Programs\XiguaDramaAgent"
 Write-Host "安装目录: `$ID"
+
+# A1 修复：安装密码不再嵌入脚本，安装时向用户索取（密码通过密码文件线下交付）
+Write-Host ""
+`$secPwd = Read-Host "请输入安装密码" -AsSecureString
+if (-not `$secPwd) { Write-Host "未输入密码，安装取消。" -ForegroundColor Red; pause; exit 1 }
+`$__ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR(`$secPwd)
+try {
+    `$installPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(`$__ptr)
+} finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$__ptr)
+}
+`$secPwd = `$null
+
 Write-Host "正在解密验证..."
 
-# 解密
+# 解密外层安装包：.enc = [pkgSalt(16)][IV(16)][ciphertext]，密钥由安装密码 PBKDF2 派生
 `$RW = [System.IO.File]::ReadAllBytes(`$EF)
-`$IV = `$RW[0..15]
-`$CI = `$RW[16..(`$RW.Length-1)]
-`$KB = [byte[]]@()  # 下面从占位符填充
-$pkgKeyBytes_placeholder
+`$PSalt = `$RW[0..15]
+`$IV = `$RW[16..31]
+`$CI = `$RW[32..(`$RW.Length-1)]
+`$__derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(`$installPassword, `$PSalt, 100000)
+`$KB = `$__derive.GetBytes(32)
+`$__derive.Dispose()
 
 `$AS = [System.Security.Cryptography.Aes]::Create()
 `$AS.KeySize = 256; `$AS.Mode = [System.Security.Cryptography.CipherMode]::CBC
@@ -572,6 +574,28 @@ foreach (`$Y in `$ZP.Entries) {
 }
 `$ZP.Dispose(); `$MS.Dispose()
 
+# A1 修复：由安装密码派生 vault 密钥，经 Windows DPAPI（当前用户）保护后落盘；
+# launch.ps1 运行时解密使用，密钥不再嵌入任何脚本
+`$vaultDat = Join-Path `$ID "xigua-vault.dat"
+if (-not (Test-Path `$vaultDat)) {
+    Write-Host "警告: 未找到 xigua-vault.dat，启动时将无法解密资源。" -ForegroundColor Yellow
+} else {
+    `$vraw = [System.IO.File]::ReadAllBytes(`$vaultDat)
+    `$VSalt = `$vraw[0..15]
+    `$__vderive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(`$installPassword, `$VSalt, 100000)
+    `$vkey = `$__vderive.GetBytes(32)
+    `$__vderive.Dispose()
+    `$installPassword = `$null
+    Add-Type -AssemblyName System.Security
+    `$keyDir = Join-Path `$env:LOCALAPPDATA "XiguaDramaAgent"
+    New-Item -ItemType Directory -Force -Path `$keyDir | Out-Null
+    `$prot = [Security.Cryptography.ProtectedData]::Protect(`$vkey, `$null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [Array]::Clear(`$vkey, 0, `$vkey.Length)
+    [System.IO.File]::WriteAllBytes((Join-Path `$keyDir "vault.key"), `$prot)
+    [Array]::Clear(`$prot, 0, `$prot.Length)
+    Write-Host "vault 密钥已用 DPAPI 保护并保存（当前 Windows 用户）。" -ForegroundColor Gray
+}
+
 # 桌面快捷方式
 try {
     `$WS = New-Object -ComObject WScript.Shell
@@ -591,15 +615,7 @@ if (`$CH -ne 'n' -and `$CH -ne 'N') { Start-Process (Join-Path `$ID "打开西�
 pause
 "@
 
-# 在安装脚本中嵌入密钥（分段 + Base64）
-$pkgKeyB64 = [Convert]::ToBase64String($pkgKey)
-$pkgParts = @()
-$sz = [math]::Ceiling($pkgKeyB64.Length / 4)
-for ($i = 0; $i -lt 4; $i++) {
-    $pkgParts += $pkgKeyB64.Substring($i * $sz, [math]::Min($sz, $pkgKeyB64.Length - $i * $sz))
-}
-$keyLine = "`$KB = [Convert]::FromBase64String('$($pkgParts[0])'+'$($pkgParts[1])'+'$($pkgParts[2])'+'$($pkgParts[3])')"
-$installPs1 = $installPs1.Replace('$pkgKeyBytes_placeholder', $keyLine)
+# A1 修复：不再向安装脚本嵌入密钥（改为安装时索取密码），占位符机制已删除
 
 $installPs1Path = "$OutputDir\安装-西瓜短剧Agent.ps1"
 Set-Content $installPs1Path $installPs1 -Encoding UTF8
@@ -620,9 +636,9 @@ pause
 西瓜短剧Agent v$Version — 安装密码
 ========================================
 生成时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-安装密码: $pkgPassword
+安装密码: $Password
 
-请妥善保管！安装时需要此密码解密。
+请妥善保管！安装时需要此密码解密（请线下单独交付用户，切勿与安装包同渠道发送）。
 
 ========================================
 "@ | Set-Content "$OutputDir\密码-请妥善保管.txt" -Encoding UTF8
@@ -631,14 +647,18 @@ pause
 Write-Host "`n验证运行时解密..." -ForegroundColor Gray
 try {
     $testVault = Join-Path $encPath.Replace('.enc', '') "_test"
-    # Decrypt test
+    # Decrypt test（新格式：[pkgSalt(16)][IV(16)][ciphertext]，密钥由安装密码派生）
     $rw = [System.IO.File]::ReadAllBytes($encPath)
-    $iv2 = $rw[0..15]
-    $ci2 = $rw[16..($rw.Length-1)]
+    $psalt2 = $rw[0..15]
+    $iv2 = $rw[16..31]
+    $ci2 = $rw[32..($rw.Length-1)]
+    $__td = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $psalt2, 100000)
+    $testKey = $__td.GetBytes(32)
+    $__td.Dispose()
     $aes3 = [System.Security.Cryptography.Aes]::Create()
     $aes3.KeySize = 256; $aes3.Mode = [System.Security.Cryptography.CipherMode]::CBC
     $aes3.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-    $aes3.Key = $pkgKey; $aes3.IV = $iv2
+    $aes3.Key = $testKey; $aes3.IV = $iv2
     $dc2 = $aes3.CreateDecryptor()
     $zb2 = $dc2.TransformFinalBlock($ci2, 0, $ci2.Length)
     $aes3.Dispose()
@@ -665,11 +685,10 @@ Write-Host "=== 保护效果 ===" -ForegroundColor Cyan
 Write-Host "  安装后磁盘上的文件:" -ForegroundColor White
 Write-Host "    xigua-backend.exe  → 二进制可执行文件" -ForegroundColor Gray
 Write-Host "    xigua-vault.dat    → AES-256 加密（含 web/dict/skills/config）" -ForegroundColor Gray
-Write-Host "    launch.ps1         → 混淆 + 分段密钥" -ForegroundColor Gray
+Write-Host "    launch.ps1         → 混淆（密钥经 DPAPI 保护，不在脚本内）" -ForegroundColor Gray
 Write-Host "    其他 .bat/.cmd      → 明文启动脚本" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  运行时: vault → %TEMP% 解密 → 进程退出 → 覆写删除" -ForegroundColor Yellow
 Write-Host "  普通用户浏览安装目录: 只能看到 exe + 加密数据 + 混淆脚本" -ForegroundColor Green
 Write-Host ""
-Write-Host "  安装密码: $pkgPassword" -ForegroundColor Yellow
-Write-Host "  密码已保存到: 密码-请妥善保管.txt" -ForegroundColor Yellow
+Write-Host "  安装密码已保存到: 密码-请妥善保管.txt（请线下单独交付用户，切勿与安装包同渠道发送）" -ForegroundColor Yellow

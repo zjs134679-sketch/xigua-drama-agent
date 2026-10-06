@@ -23,6 +23,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -47,10 +49,68 @@ JWT_TTL_SECONDS = int(os.environ.get("XIGUA_JWT_TTL_SECONDS", str(7 * 24 * 3600)
 CAP_TTL_SECONDS = int(os.environ.get("XIGUA_CAP_TTL_SECONDS", "1800"))  # 能力票 30 分钟
 PBKDF2_ITERS = int(os.environ.get("XIGUA_PBKDF2_ITERS", "600000"))
 LICENSE_PEPPER = os.environ.get("XIGUA_LICENSE_PEPPER", SECRET)
-if SECRET == "dev-secret-change-me-in-prod":
-    import warnings
+# ---- A5 修复：默认/弱密钥直接拒绝启动（仅警告等于没设防）----
+_DEV_SECRET_PLACEHOLDER = "dev-secret-change-me-in-prod"
+if SECRET == _DEV_SECRET_PLACEHOLDER:
+    raise SystemExit(
+        "拒绝启动：XIGUA_AUTH_SECRET 仍为默认值 dev-secret-change-me-in-prod。"
+        "请设置为 32 字节以上随机串，例如：python -c \"import secrets;print(secrets.token_hex(32))\""
+    )
+_ADMIN_SECRET_EXPLICIT = os.environ.get("XIGUA_ADMIN_SECRET")
+if (
+    not _ADMIN_SECRET_EXPLICIT
+    or ADMIN_SECRET == _DEV_SECRET_PLACEHOLDER
+    or ADMIN_SECRET == SECRET
+):
+    raise SystemExit(
+        "拒绝启动：XIGUA_ADMIN_SECRET 必须独立设置，且不得为默认值、不得与 XIGUA_AUTH_SECRET 相同。"
+    )
 
-    warnings.warn("XIGUA_AUTH_SECRET 仍为默认值，生产环境必须更换为长随机串", stacklevel=1)
+
+# ---- A2 修复：能力票改 Ed25519 非对称签名 ----
+# 私钥仅保存在 auth-server；客户端包只带公钥（XIGUA_CAPABILITY_PUBKEY），
+# 彻底解决"JWT 签名密钥分发给客户端导致可自签永久 pro"的问题。
+# 旧 HS256 能力票自本版本起作废（验签侧仅接受 EdDSA），升级后需重新签发。
+def _decode_key_bytes(raw: str, size: int, name: str) -> bytes:
+    s = (raw or "").strip()
+    data: bytes | None = None
+    if s and len(s) == size * 2 and all(c in "0123456789abcdefABCDEF" for c in s):
+        data = bytes.fromhex(s)
+    else:
+        try:
+            data = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+        except Exception:
+            data = None
+    if not data or len(data) != size:
+        raise SystemExit(f"拒绝启动：{name} 必须是 {size} 字节（hex 或 base64），当前无法解析")
+    return data
+
+
+def _load_capability_keypair() -> tuple[Ed25519PrivateKey, object]:
+    raw = os.environ.get("XIGUA_CAPABILITY_PRIVKEY", "").strip()
+    if raw:
+        priv = Ed25519PrivateKey.from_private_bytes(
+            _decode_key_bytes(raw, 32, "XIGUA_CAPABILITY_PRIVKEY")
+        )
+    else:
+        import warnings
+
+        warnings.warn(
+            "XIGUA_CAPABILITY_PRIVKEY 未设置：已生成临时 Ed25519 密钥对，"
+            "重启后签发的能力票全部失效；生产环境必须设置该变量",
+            stacklevel=1,
+        )
+        priv = Ed25519PrivateKey.generate()
+    return priv, priv.public_key()
+
+
+_CAP_PRIVKEY, _CAP_PUBKEY = _load_capability_keypair()
+
+
+def capability_pubkey_b64() -> str:
+    """能力票验签公钥（base64，32 字节原始公钥），写入客户端包配置 XIGUA_CAPABILITY_PUBKEY。"""
+    raw = _CAP_PUBKEY.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return base64.b64encode(raw).decode("ascii")
 
 _SECRET_DICT_DIR = BASE_DIR / "secret_dict"
 _PLACEHOLDER = {
@@ -205,7 +265,7 @@ def make_token(username: str, machine_id: str | None = None) -> str:
 
 
 def make_capability(user: "User", machine_id: str | None = None) -> str | None:
-    """短期能力票：本地后端可离线验签（共享 SECRET）。"""
+    """短期能力票：Ed25519 签发，客户端仅持公钥验签（A2：不再共享 HS256 密钥）。"""
     if not is_license_active(user):
         return None
     now = int(time.time())
@@ -221,7 +281,7 @@ def make_capability(user: "User", machine_id: str | None = None) -> str | None:
         "mid": mid or None,
         "eat": int(user.expire_at.timestamp()) if user.expire_at else None,
     }
-    token = jwt.encode(payload, SECRET, algorithm="HS256")
+    token = jwt.encode(payload, _CAP_PRIVKEY, algorithm="EdDSA")
     return token if isinstance(token, str) else token.decode("utf-8")
 
 
@@ -410,6 +470,7 @@ def touch_user(user: User, machine_id: str | None = None) -> None:
 
 
 def append_license_history(user: User, code: str, days: int, plan: str) -> None:
+    """A4 修复：只存卡密指纹，不存明文（旧库中的明文条目在 user_view 输出时同样只吐指纹）。"""
     hist: list = []
     try:
         hist = json.loads(user.license_history or "[]")
@@ -419,7 +480,7 @@ def append_license_history(user: User, code: str, days: int, plan: str) -> None:
         hist = []
     hist.append(
         {
-            "code": code,
+            "code_digest": license_code_digest(code),
             "days": days,
             "plan": plan,
             "at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -427,7 +488,7 @@ def append_license_history(user: User, code: str, days: int, plan: str) -> None:
     )
     # 只保留最近 50 条
     user.license_history = json.dumps(hist[-50:], ensure_ascii=False)
-    user.last_license_code = code
+    user.last_license_code = license_code_digest(code)
 
 
 # ---------------- DTO ----------------
@@ -484,6 +545,35 @@ class AdminResetPasswordBody(BaseModel):
     new_password: str = Field(min_length=6, max_length=128)
 
 
+def _safe_license_history(hist: list) -> list:
+    """A4 修复：卡密历史只返回指纹，绝不返回明文；兼容旧库中存明文的条目。"""
+    safe: list = []
+    for h in hist:
+        if not isinstance(h, dict):
+            continue
+        digest = h.get("code_digest")
+        if not digest and h.get("code"):
+            digest = license_code_digest(str(h["code"]))
+        safe.append(
+            {
+                "code_digest": digest,
+                "days": h.get("days"),
+                "plan": h.get("plan"),
+                "at": h.get("at"),
+            }
+        )
+    return safe
+
+
+def _safe_last_license_code(value: str | None) -> str | None:
+    """新写入均为 16 位 hex 指纹；旧库明文在此统一转指纹后返回。"""
+    if not value:
+        return None
+    if len(value) == 16 and all(c in "0123456789abcdef" for c in value):
+        return value
+    return license_code_digest(value)
+
+
 def user_view(u: User) -> dict:
     active = is_license_active(u)
     machines = _parse_machines(u.machines)
@@ -507,8 +597,8 @@ def user_view(u: User) -> dict:
         "license_reason": license_reason(u),
         "machines_bound": len(machines),
         "max_machines": u.max_machines or DEFAULT_MAX_MACHINES,
-        "last_license_code": u.last_license_code,
-        "license_history": hist,
+        "last_license_code": _safe_last_license_code(u.last_license_code),
+        "license_history": _safe_license_history(hist),
         "last_seen_at": u.last_seen_at.isoformat() + "Z" if u.last_seen_at else None,
         "last_machine_id": u.last_machine_id,
         "note": u.note,
@@ -733,7 +823,7 @@ def activate_license(body: ActivateBody, user: User = Depends(current_user), db:
         "activate",
         username=user.username,
         machine_id=body.machine_id,
-        detail=f"code={code} +{key.days}d plan={key.plan}",
+        detail=f"code_digest={license_code_digest(code)} +{key.days}d plan={key.plan}",
     )
     db.commit()
     db.refresh(user)
@@ -917,30 +1007,47 @@ def admin_list_events(
 
 
 @app.post("/compliance/violation")
-def report_violation(body: ViolationReport, db: Session = Depends(get_db)) -> dict:
-    """客户端命中红线后上报；封号权威判定在此。"""
-    user = db.scalars(select(User).where(User.username == body.username)).first()
-    if not user:
+def report_violation(
+    body: ViolationReport,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """客户端命中红线后上报；封号权威判定在此。
+
+    A3 修复：要求 Bearer 访问令牌，且只能上报自己（username 必须等于 token 的 sub），
+    防止任意账号被恶意"举报"至封号。
+    """
+    if body.username != user.username:
+        raise HTTPException(403, "只能上报自己的合规状态")
+    target = db.scalars(select(User).where(User.username == body.username)).first()
+    if not target:
         raise HTTPException(404, "用户不存在")
     if body.level == "red":
-        user.violation_count += 1
-        if user.violation_count >= BAN_THRESHOLD and not user.banned:
-            user.banned = True
-            user.banned_reason = f"红线违规累计达到 {BAN_THRESHOLD} 次"
+        target.violation_count += 1
+        if target.violation_count >= BAN_THRESHOLD and not target.banned:
+            target.banned = True
+            target.banned_reason = f"红线违规累计达到 {BAN_THRESHOLD} 次"
     db.commit()
     return {
-        "violation_count": user.violation_count,
-        "banned": user.banned,
-        "banned_reason": user.banned_reason,
+        "violation_count": target.violation_count,
+        "banned": target.banned,
+        "banned_reason": target.banned_reason,
     }
 
 
 @app.get("/compliance/status")
-def compliance_status(username: str, db: Session = Depends(get_db)) -> dict:
-    user = db.scalars(select(User).where(User.username == username)).first()
-    if not user:
+def compliance_status(
+    username: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """A4 修复：要求 Bearer 访问令牌，且只能查询自己；返回的卡密历史仅含指纹。"""
+    if username != user.username:
+        raise HTTPException(403, "只能查询自己的合规状态")
+    target = db.scalars(select(User).where(User.username == username)).first()
+    if not target:
         raise HTTPException(404, "用户不存在")
-    return user_view(user)
+    return user_view(target)
 
 
 @app.get("/compliance/dict")

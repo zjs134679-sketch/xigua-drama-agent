@@ -104,6 +104,35 @@ if (Test-Path $wfSrc) {
   Copy-Item -Path "$wfSrc\*" -Destination (Join-Path $Release "app\workflows") -Recurse -Force
 }
 
+# ---------- 能力票验签公钥（Ed25519，A2 修复） ----------
+# 客户端不再持有 JWT 签名密钥；构建时从 auth-server 的 Ed25519 私钥派生公钥写入配置。
+Write-Step "派生能力票验签公钥（Ed25519）"
+$capPriv = $env:XIGUA_CAPABILITY_PRIVKEY
+if (-not $capPriv) {
+  throw "缺少环境变量 XIGUA_CAPABILITY_PRIVKEY（auth-server 能力票 Ed25519 私钥，32 字节 hex/base64）。请先在 auth-server 侧生成（例：python -c `"import secrets;print(secrets.token_hex(32))`"）并设置，再重新构建。"
+}
+$capPub = & $Py -c @"
+import base64, os, sys
+raw = os.environ.get('XIGUA_CAPABILITY_PRIVKEY', '').strip()
+data = None
+if raw and len(raw) == 64 and all(c in '0123456789abcdefABCDEF' for c in raw):
+    data = bytes.fromhex(raw)
+else:
+    try:
+        data = base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4))
+    except Exception:
+        data = None
+if not data or len(data) != 32:
+    sys.exit('XIGUA_CAPABILITY_PRIVKEY 必须是 32 字节（hex 或 base64）')
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+pub = Ed25519PrivateKey.from_private_bytes(data).public_key()
+print(base64.b64encode(pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode())
+"@
+$capPub = ($capPub | Out-String).Trim()
+if (-not $capPub) { throw "能力票公钥派生失败：请确认 backend .venv 已安装 cryptography" }
+Write-Host "XIGUA_CAPABILITY_PUBKEY=$capPub" -ForegroundColor Gray
+
 # ---------- 生产环境配置模板 ----------
 Write-Step "写入生产配置模板"
 @"
@@ -118,8 +147,9 @@ XIGUA_AUTH_SERVER_URL=http://127.0.0.1:8100
 # 卖客户时改成公网，例如：
 # XIGUA_AUTH_SERVER_URL=https://auth.example.com
 
-# 与 auth-server 的 XIGUA_AUTH_SECRET 必须一致
-XIGUA_AUTH_SECRET=dev-secret-change-me-in-prod
+# 能力票验签公钥（Ed25519，base64）：构建时已从 auth-server 私钥自动派生填入，无需手动改。
+# 客户端不再持有签名密钥；旧 HS256 能力票作废，升级后用户需重新登录。
+XIGUA_CAPABILITY_PUBKEY=$capPub
 "@ | Set-Content -Path (Join-Path $Release "config.env.example") -Encoding UTF8
 
 # ---------- 启动器（BAT + VBS，带健康检查） ----------
@@ -234,7 +264,7 @@ pause
 
 # ---------- Nuitka ----------
 Write-Step "安装/检查 Nuitka 并构建后端 exe"
-& $Py -m pip install -q "nuitka>=2.0" ordered-set zstandard
+& $Py -m pip install -q "nuitka>=2.0" ordered-set zstandard "cryptography>=41"
 $nuitkaOk = $false
 Push-Location $Backend
 $env:XIGUA_FRONTEND_DIST = Join-Path $Release "web"
@@ -261,6 +291,7 @@ $nuitkaArgs = @(
   "--include-package=httpx",
   "--include-package=anyio",
   "--include-package=jwt",
+  "--include-package=cryptography",
   "--include-package=pypinyin",
   "--include-package=multipart",
   "--include-package=python_multipart",
@@ -315,7 +346,7 @@ if (-not $nuitkaOk) {
 【配置】
 安装目录 config.env：
 - XIGUA_AUTH_SERVER_URL
-- XIGUA_AUTH_SECRET（与授权服一致）
+- XIGUA_CAPABILITY_PUBKEY（构建时自动填入，无需手动改）
 
 【数据目录】
 用户数据写在：%LOCALAPPDATA%\XiguaDramaAgent\data
