@@ -55,7 +55,7 @@ $env:XIGUA_PBKDF2_ITERS = "600000"
 
 | 路径 | 说明 |
 |------|------|
-| `E:\xigua Agent  密码管理\auth-server\app\main.py` | 发卡/JWT/能力票 |
+| `<auth-server>/app/main.py` | 发卡/JWT/能力票 |
 | `backend/app/services/license_gate.py` | 本地门禁 |
 | `backend/app/services/license_crypto.py` | 能力票验签 |
 | `frontend/src/api/client.ts` | 设备码、能力票头、会话 |

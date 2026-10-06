@@ -1,9 +1,9 @@
 # =============================================================================
 # 西瓜短剧Agent — 加密安装包构建脚本
-# 输出：E:\xigua-drama-agent\anzhuangbao\
+# 输出：<仓库根>\anzhuangbao\（默认，可用 -OutputDir 覆盖）
 # =============================================================================
 param(
-    [string]$OutputDir = "E:\xigua-drama-agent\anzhuangbao",
+    [string]$OutputDir = "",
     [string]$Password = "",
     [string]$Version = "0.1.2"
 )
@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Resolve-Path "$scriptDir\.."
+if (-not $OutputDir) { $OutputDir = Join-Path $projectRoot "anzhuangbao" }
 $releaseDir = "$projectRoot\release"
 $stagingDir = "$OutputDir\staging"
 $packageName = "西瓜短剧Agent-Setup-$Version"

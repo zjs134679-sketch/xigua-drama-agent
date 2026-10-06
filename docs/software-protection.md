@@ -53,9 +53,8 @@ license_active =
 
 ### 启动 auth-server（生产）
 
-> 授权服务已从软件工程目录**迁出**到独立卡密平台：  
-> `E:\xigua Agent  密码管理\auth-server`  
-> 推荐直接双击：`E:\xigua Agent  密码管理\一键启动.bat`
+> 授权服务已从软件工程目录**迁出**到独立卡密平台（`<auth-server独立目录>`）：  
+> 推荐直接双击该目录下的`一键启动.bat`
 
 ```powershell
 $env:XIGUA_AUTH_SECRET = "请换成长随机串"
@@ -63,7 +62,7 @@ $env:XIGUA_ADMIN_SECRET = "管理员发卡密钥"
 $env:XIGUA_TRIAL_DAYS = "7"
 $env:XIGUA_LICENSE_REQUIRED = "1"
 $env:XIGUA_MAX_MACHINES = "2"
-cd "E:\xigua Agent  密码管理\auth-server"
+cd "<auth-server独立目录>"
 .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8100
 ```
 

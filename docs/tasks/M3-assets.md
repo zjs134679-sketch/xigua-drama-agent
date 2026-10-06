@@ -13,7 +13,7 @@
 
 ## 角色一致性实现说明（自包含，无需外部仓库）
 "人在场景里"的多参考一致性思路：先各自出"角色图"和"场景图"；当某镜头需要"角色出现在该场景"时，用 FLUX.1 Kontext 多参考——**参考图顺序：场景图在前、人物图在后**，链式 ReferenceLatent + FluxKontextMultiReferenceLatentMethod(method=index)，提示词含"风格 + 人物名(外貌保持与参考一致) + 场景(location+prompt) + 动作 + 保护语(no text 等)"。Kontext 的 API 格式工作流模板放 `backend/app/workflows/kontext-multiref.api.json`（可新建）。无 Kontext 配置时退普通 flux 单图（`flux-t2i.api.json`）。
-> 备注：旧 TS 参考实现在 `E:\AI视频\教程\西瓜短剧Agent\xigua-drama`，但 Codex 沙箱可能无法读 E: 盘——**以本说明为准即可，不依赖该仓库**。
+> 备注：旧 TS 参考实现在历史个人目录中，**以本说明为准即可，不依赖该仓库**。
 
 ## 交付内容
 1. **画风库**：新增 `art_styles` 表（`name, prompt_suffix, lora, thumbnail, sort_order` + 时间戳）；CRUD API（`/art-styles`）；前端「画风库」页（列表 + 新增）。

@@ -75,11 +75,11 @@ function Start-LoggedProcess(
 Write-Step "项目目录：$Root"
 
 $BackendPython = Join-Path $Root "backend\.venv\Scripts\python.exe"
-# 授权服务实体在「E:\xigua Agent  密码管理\auth-server」；工程内 auth-server 为联接目录
+# auth-server 位于仓库内（<repo>/auth-server）；也可用环境变量 XIGUA_AUTH_SERVER_DIR 指定其他位置
 $AuthRootCandidates = @(
-    (Join-Path $Root "auth-server"),
-    "E:\xigua Agent  密码管理\auth-server"
+    (Join-Path $Root "auth-server")
 )
+if ($env:XIGUA_AUTH_SERVER_DIR) { $AuthRootCandidates = @($env:XIGUA_AUTH_SERVER_DIR) + $AuthRootCandidates }
 $AuthRoot = $null
 $AuthPython = $null
 foreach ($cand in $AuthRootCandidates) {
@@ -93,7 +93,7 @@ foreach ($cand in $AuthRootCandidates) {
 }
 $Npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
 if (-not (Test-Path $BackendPython)) { throw "后端环境不存在：请先运行 scripts\build_backend.bat" }
-if (-not $AuthPython) { throw "认证环境不存在。请确认「E:\xigua Agent  密码管理\auth-server」完整，或双击该目录 一键启动.bat" }
+if (-not $AuthPython) { throw "认证环境不存在：请确认 auth-server 目录完整（仓库内 auth-server/，或设置 XIGUA_AUTH_SERVER_DIR 环境变量指定位置）" }
 if (-not $Npm) { throw "未找到 Node.js/npm，请先安装 Node.js" }
 if (-not (Test-Path (Join-Path $Root "frontend\node_modules"))) {
     Write-Step "首次安装前端依赖"

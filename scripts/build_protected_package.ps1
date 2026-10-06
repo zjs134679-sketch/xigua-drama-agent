@@ -3,8 +3,8 @@
 # 前端/配置/词典 → 加密存储，运行时解密到 %TEMP%，退出即销毁
 # =============================================================================
 param(
-    [string]$OutputDir = "E:\xigua-drama-agent\anzhuangbao",
-    [string]$ReleaseDir = "E:\xigua-drama-agent\release",
+    [string]$OutputDir = "",
+    [string]$ReleaseDir = "",
     [string]$Version = "0.1.2",
     [string]$Password = ""
 )
@@ -33,6 +33,12 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " 西瓜短剧Agent — 受保护安装包构建 v2" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " （安装密码仅写入 密码-请妥善保管.txt，不在控制台显示）" -ForegroundColor Gray
+
+# 输出/发布目录默认位于仓库根下，可用 -OutputDir / -ReleaseDir 参数覆盖
+$buildScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$buildProjectRoot = (Resolve-Path (Join-Path $buildScriptDir "..")).Path
+if (-not $OutputDir) { $OutputDir = Join-Path $buildProjectRoot "anzhuangbao" }
+if (-not $ReleaseDir) { $ReleaseDir = Join-Path $buildProjectRoot "release" }
 
 # ---------- 1. 准备输出 ----------
 Write-Host "`n[1/6] 准备..." -ForegroundColor Yellow
@@ -468,7 +474,7 @@ Remove-Item -Force $finalZip -ErrorAction SilentlyContinue
 
 # ---------- 6b. 用 Inno Setup 编译 EXE 安装程序 ----------
 Write-Host "[6b/7] 编译 Inno Setup EXE 安装程序..." -ForegroundColor Yellow
-$issSource = "E:\xigua-drama-agent\installer\xigua-setup-protected.iss"
+$issSource = Join-Path $buildProjectRoot "installer\xigua-setup-protected.iss"
 $isccExe = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 $exeOutput = $null
 
