@@ -19,13 +19,14 @@ import os
 import secrets
 import string
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, event, select, text
@@ -324,7 +325,8 @@ def current_user(
         raise HTTPException(401, "用户不存在")
     token_mid = (payload.get("mid") or "").strip()
     req_mid = (x_machine_id or "").strip()
-    if token_mid and req_mid and token_mid != req_mid:
+    # A6：token 绑定了机器时，请求没带 X-Machine-Id 头也拒绝（原来不传头直接跳过检查）
+    if token_mid and token_mid != req_mid:
         raise HTTPException(401, "令牌与当前设备不匹配，请重新登录")
     return user
 
@@ -648,8 +650,43 @@ def health() -> dict:
     }
 
 
+# ── 二-11：内存滑动窗口限流（防批量注册薅试用 / 登录撞库；不引入新依赖） ──
+_RATE_LIMIT_RULES: dict[str, tuple[int, float]] = {
+    "register": (10, 60.0),  # 每 IP 每 60 秒最多 10 次注册
+    "login": (30, 60.0),  # 每 IP 每 60 秒最多 30 次登录
+}
+_RATE_LIMIT_BUCKETS: dict[tuple[str, str], deque] = {}
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip() or "unknown"
+    return request.client.host if request.client else "unknown"
+
+
+def check_rate_limit(request: Request, key: str) -> None:
+    """滑动窗口限流；超限抛 429。"""
+    limit, window = _RATE_LIMIT_RULES[key]
+    now = time.monotonic()
+    bucket_key = (key, _client_ip(request))
+    dq = _RATE_LIMIT_BUCKETS.get(bucket_key)
+    if dq is None:
+        dq = _RATE_LIMIT_BUCKETS[bucket_key] = deque()
+    while dq and dq[0] <= now - window:
+        dq.popleft()
+    if len(dq) >= limit:
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
+    dq.append(now)
+    # 防止桶无限增长：超 1 万个桶时淘汰最旧的一半
+    if len(_RATE_LIMIT_BUCKETS) > 10000:
+        for k in list(_RATE_LIMIT_BUCKETS)[:5000]:
+            _RATE_LIMIT_BUCKETS.pop(k, None)
+
+
 @app.post("/auth/register")
-def register(body: Credentials, db: Session = Depends(get_db)) -> dict:
+def register(body: Credentials, request: Request, db: Session = Depends(get_db)) -> dict:
+    check_rate_limit(request, "register")
     if db.scalars(select(User).where(User.username == body.username)).first():
         raise HTTPException(409, "用户名已存在")
     expire = datetime.utcnow() + timedelta(days=TRIAL_DAYS) if TRIAL_DAYS > 0 else None
@@ -678,7 +715,8 @@ def register(body: Credentials, db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/auth/login")
-def login(body: Credentials, db: Session = Depends(get_db)) -> dict:
+def login(body: Credentials, request: Request, db: Session = Depends(get_db)) -> dict:
+    check_rate_limit(request, "login")
     user = db.scalars(select(User).where(User.username == body.username)).first()
     if not user or not verify_pw(body.password, user.password_hash):
         log_event(db, "login_fail", username=body.username, machine_id=body.machine_id, detail="密码错误或用户不存在")

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
+from app.services.license_gate import require_valid_license
 from app.models.domain import (
     Character,
     Drama,
@@ -181,9 +182,16 @@ def create_episode(drama_id: int, body: EpisodeCreate, db: Session = Depends(get
 
 
 @router.post("/{drama_id}/import-novel")
-def import_novel(drama_id: int, body: NovelImportRequest, db: Session = Depends(get_db)) -> dict:
+def import_novel(
+    drama_id: int,
+    body: NovelImportRequest,
+    db: Session = Depends(get_db),
+    lic: dict = Depends(require_valid_license),
+) -> dict:
     """整篇小说 → 合规 → 自动分集（按章/按长度）→ 批量建分集。"""
-    ensure_active_user(db, body.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = enforce.ticket_username(lic) or body.username
+    ensure_active_user(db, username)
     drama = db.get(Drama, drama_id)
     if not drama:
         raise HTTPException(404, "项目不存在")
@@ -194,7 +202,7 @@ def import_novel(drama_id: int, body: NovelImportRequest, db: Session = Depends(
 
     result = check(text)
     if result.blocked:
-        audit = enforce.record_violation(db, body.username, result, "novel_import")
+        audit = enforce.record_violation(db, username, result, "novel_import", lic=lic)
         raise HTTPException(
             status_code=451,
             detail={

@@ -1,7 +1,9 @@
 """小说事件图谱：分章 → 抽事件 → 按事件改编剧本。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from typing import Any
 
@@ -12,6 +14,8 @@ from app.models.domain import Drama, Episode, NovelChapter, NovelEvent
 from app.services.compliance import check, enforce
 from app.services.llm.client import LLMNotConfigured, chat_text, resolve_llm
 from app.services.project_memory import build_project_context_block
+
+logger = logging.getLogger(__name__)
 
 
 def _split_chapters(text: str) -> list[tuple[str, str]]:
@@ -158,7 +162,9 @@ async def _llm_extract_events(db: Session, drama: Drama, chapter_text: str) -> l
     )
     try:
         base_url, api_key, model = resolve_llm(db)
-        raw = chat_text(
+        # B5: chat_text 是同步阻塞调用，扔进线程池，避免卡住事件循环
+        raw = await asyncio.to_thread(
+            chat_text,
             [
                 {"role": "system", "content": "你是短剧改编策划，擅长把小说拆成可拍摄事件。"},
                 {"role": "user", "content": prompt},
@@ -170,8 +176,11 @@ async def _llm_extract_events(db: Session, drama: Drama, chapter_text: str) -> l
         )
     except LLMNotConfigured:
         return []
-    except Exception:  # noqa: BLE001
-        return []
+    except Exception as exc:
+        # B4: 只吞"未配置"，其他异常（超时/429/5xx/解析失败）上抛，由 API 转 502，
+        # 不再静默返回空列表误导调用方以为"本章无事件"
+        logger.exception("LLM 事件提取失败")
+        raise RuntimeError(f"事件提取失败: {exc}") from exc
     return _parse_json_list(raw)
 
 
@@ -244,7 +253,9 @@ async def adapt_events_to_episode(
     )
     try:
         base_url, api_key, model = resolve_llm(db)
-        script = chat_text(
+        # B5: chat_text 是同步阻塞调用，扔进线程池，避免卡住事件循环
+        script = await asyncio.to_thread(
+            chat_text,
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             base_url,
             api_key,

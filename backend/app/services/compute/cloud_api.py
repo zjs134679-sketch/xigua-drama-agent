@@ -123,21 +123,28 @@ def _file_to_data_url(path: Path) -> str:
 
 
 def resolve_cloud_image_ref(source: str, oss_dir: Path | None = None) -> str:
-    """本地 /oss 图 → data URL；已是 http(s)/data 则原样。供云图生视频使用。"""
+    """本地 /oss 图 → data URL；已是 http(s)/data 则原样。供云图生视频使用。
+
+    D2：不再接受任意本地绝对路径（原来 p.is_file() 直接读入 base64 发往云端，
+    等于把本地文件内容外发）。只允许 /oss/<文件名>（约束在 oss_dir 内）。
+    """
     text = (source or "").strip()
     if not text:
         raise ValueError("参考图地址为空")
     if text.startswith("data:") or urlparse(text).scheme in {"http", "https"}:
         return text
     name = Path(text).name
+    if not text.startswith("/oss/"):
+        raise ValueError("参考图只允许 /oss/<文件名> 或公网 http(s) URL")
     candidates: list[Path] = []
-    if text.startswith("/oss/") and oss_dir is not None:
-        candidates.append(oss_dir / name)
-    p = Path(text)
-    if p.is_file():
-        candidates.append(p)
     if oss_dir is not None:
-        candidates.append(oss_dir / name)
+        # basename 约束 + relative_to 目录约束，防止 /oss/../../ 跳出
+        cand = (oss_dir / name).resolve()
+        try:
+            cand.relative_to(oss_dir.resolve())
+        except ValueError as exc:
+            raise ValueError("非法的 OSS 素材路径") from exc
+        candidates.append(cand)
     for cand in candidates:
         try:
             if cand.is_file() and cand.stat().st_size > 0:

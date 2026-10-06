@@ -31,8 +31,10 @@ def _block(
     result: FilterResult,
     source: str,
     message: str,
+    lic: dict | None = None,
 ) -> None:
-    enforcement = enforce.record_violation(db, username, result, source)
+    # E1：record_violation 内部票据身份优先，此处透传 lic
+    enforcement = enforce.record_violation(db, username, result, source, lic=lic)
     raise HTTPException(
         status_code=451,
         detail={
@@ -52,7 +54,7 @@ def script_generate(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ) -> dict:
-    ensure_active_user(db, req.username)
+    ensure_active_user(db, enforce.ticket_username(_license) or req.username)
     ep = db.get(Episode, req.episode_id)
     if not ep:
         raise HTTPException(404, "分集不存在")
@@ -62,7 +64,7 @@ def script_generate(
     # 合规：小说原文先过红线
     input_result = check(ep.content)
     if input_result.blocked:
-        _block(db, req.username, input_result, "script_input", "原文触发红线，已拦截并记录")
+        _block(db, req.username, input_result, "script_input", "原文触发红线，已拦截并记录", lic=_license)
 
     try:
         script = generate_script(db, ep.content, req.temperature, episode_id=ep.id)
@@ -81,7 +83,7 @@ def script_generate(
 
     output_result = check(script)
     if output_result.blocked:
-        _block(db, req.username, output_result, "script_output", "生成剧本触发红线，已拦截并记录")
+        _block(db, req.username, output_result, "script_output", "生成剧本触发红线，已拦截并记录", lic=_license)
 
     ep.script_content = script
     db.commit()
@@ -96,14 +98,14 @@ def script_generate(
 @router.post("/draft")
 def script_draft(req: ScriptDraftRequest, db: Session = Depends(get_db)) -> dict:
     """快速试写：直接收小说原文 → 合规 → LLM → 返回剧本（不落库）。"""
-    ensure_active_user(db, req.username)
+    ensure_active_user(db, enforce.ticket_username(_license) or req.username)
     content = (req.content or "").strip()
     if not content:
         raise HTTPException(400, "请输入小说原文")
 
     input_result = check(content)
     if input_result.blocked:
-        _block(db, req.username, input_result, "script_input", "原文触发红线，已拦截并记录")
+        _block(db, req.username, input_result, "script_input", "原文触发红线，已拦截并记录", lic=_license)
 
     try:
         script = generate_script(db, content, req.temperature)
@@ -114,7 +116,7 @@ def script_draft(req: ScriptDraftRequest, db: Session = Depends(get_db)) -> dict
 
     output_result = check(script)
     if output_result.blocked:
-        _block(db, req.username, output_result, "script_output", "生成剧本触发红线，已拦截并记录")
+        _block(db, req.username, output_result, "script_output", "生成剧本触发红线，已拦截并记录", lic=_license)
 
     return {
         "script_content": script,

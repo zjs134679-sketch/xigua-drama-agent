@@ -29,6 +29,35 @@ def _workflows_src_dir() -> Path:
     return Path(settings.workflows_dir)
 
 
+def resolve_workflow_file_in_allowlist(file_path: str, allow_dirs: list[Path | str]) -> Path:
+    """D1：file_path 经 resolve() 后必须落在白名单目录内。
+
+    拒绝绝对路径与目录跳出（..），防止经 sync-comfy-params 读取任意本地文件。
+    返回解析后的绝对路径；不存在或不在白名单内则抛 ValueError。
+    """
+    raw = (file_path or "").strip()
+    if not raw:
+        raise ValueError("请提供 file_path")
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        raise ValueError("file_path 不允许使用绝对路径")
+    if ".." in p.parts:
+        raise ValueError("file_path 不允许目录跳出")
+    if p.suffix.lower() != ".json":
+        raise ValueError("只允许读取 .json 工作流文件")
+    for base in allow_dirs:
+        base_r = Path(base).expanduser().resolve()
+        cand = (base_r / p).resolve()
+        try:
+            cand.relative_to(base_r)
+        except ValueError:
+            continue
+        if not cand.is_file():
+            raise ValueError(f"文件不存在：{raw}")
+        return cand
+    raise ValueError("file_path 不在允许的目录内")
+
+
 def resolve_comfy_user_workflows_dir(hint: str | None = None) -> Path | None:
     """定位 ComfyUI user/default/workflows 目录。"""
     candidates: list[Path] = []

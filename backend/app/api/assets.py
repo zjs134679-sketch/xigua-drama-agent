@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
 from app.core.db import get_db
+from app.services.compliance.enforce import ticket_username
 from app.services.license_gate import require_valid_license
 from app.models.domain import ArtStyle, Character, ImageGeneration, Prop, Scene, Storyboard
 from app.schemas.assets import (
@@ -311,14 +312,16 @@ async def generate_character(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ):
-    ensure_active_user(db, body.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(_license) or body.username
+    ensure_active_user(db, username)
     try:
         outcome = await generate_character_asset(
             db,
             character_id=body.character_id,
             full_prompt=body.prompt,
             art_style_id=body.art_style_id,
-            username=body.username,
+            username=username,
             scene_id=body.scene_id,
             action=body.action,
             node_id=body.node_id,
@@ -338,14 +341,16 @@ async def generate_scene(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ):
-    ensure_active_user(db, body.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(_license) or body.username
+    ensure_active_user(db, username)
     try:
         outcome = await generate_scene_asset(
             db,
             scene_id=body.scene_id,
             full_prompt=body.prompt,
             art_style_id=body.art_style_id,
-            username=body.username,
+            username=username,
             node_id=body.node_id,
             resolution=body.resolution,
             steps=body.steps,
@@ -362,14 +367,16 @@ async def generate_prop(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ):
-    ensure_active_user(db, body.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(_license) or body.username
+    ensure_active_user(db, username)
     try:
         outcome = await generate_prop_asset(
             db,
             prop_id=body.prop_id,
             full_prompt=body.prompt,
             art_style_id=body.art_style_id,
-            username=body.username,
+            username=username,
             node_id=body.node_id,
             resolution=body.resolution,
             steps=body.steps,

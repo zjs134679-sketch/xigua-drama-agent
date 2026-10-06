@@ -11,7 +11,7 @@ class Text2ImageRequest(BaseModel):
     steps: int | None = None
     seed: int | None = None
     workflow: str = "minimax-h3-t2i.api.json"
-    username: str | None = None  # 临时：auth 接入前用于本地三振计数
+    # E1：移除 username 字段 —— 身份取自 require_valid_license 的票据，不再信任请求体
 
 
 class ComputeNodeCreate(BaseModel):

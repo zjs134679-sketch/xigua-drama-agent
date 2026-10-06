@@ -10,6 +10,7 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
+from app.core.secrets import EncryptedText
 from app.models.mixins import TimestampMixin
 
 
@@ -187,7 +188,7 @@ class AiServiceConfig(Base, TimestampMixin):
     provider: Mapped[str | None] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
-    api_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    api_key: Mapped[str] = mapped_column(EncryptedText, nullable=False, default="")  # 二-20：落盘 Fernet 加密
     model: Mapped[str | None] = mapped_column(Text)
     endpoint: Mapped[str | None] = mapped_column(Text)
     query_endpoint: Mapped[str | None] = mapped_column(Text)

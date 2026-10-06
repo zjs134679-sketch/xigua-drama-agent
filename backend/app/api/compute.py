@@ -12,8 +12,9 @@ from app.core.db import get_db
 from app.models.system import ComputeNode as ComputeNodeRow
 from app.schemas.compute import Text2ImageRequest
 from app.services.compliance import check
-from app.services.compliance.enforce import record_violation
+from app.services.compliance.enforce import record_violation, ticket_username
 from app.services.compute import ImageJob, get_active_node
+from app.services.license_gate import require_valid_license
 
 router = APIRouter(prefix="/compute", tags=["compute"])
 
@@ -124,14 +125,20 @@ def list_nodes(db: Session = Depends(get_db)) -> list[dict]:
 
 
 @router.post("/text2image")
-async def text2image(req: Text2ImageRequest, db: Session = Depends(get_db)):
+async def text2image(
+    req: Text2ImageRequest,
+    db: Session = Depends(get_db),
+    lic: dict = Depends(require_valid_license),
+):
+    # E1：username 取自票据身份，不再信任请求体（schema 已移除 username 字段）
+    username = ticket_username(lic)
     # 0. 封号校验
-    ensure_active_user(db, req.username)
+    ensure_active_user(db, username)
 
     # 1. 合规过滤（对最终绘画提示词）
     result = check(req.prompt)
     if result.blocked:
-        enf = record_violation(db, req.username, result, "image_prompt")
+        enf = record_violation(db, username, result, "image_prompt", lic=lic)
         return JSONResponse(
             status_code=451,
             content={
@@ -337,7 +344,21 @@ async def sync_comfy_params(node_id: int, body: ComfySyncBody, db: Session = Dep
         if not body.file_path:
             raise HTTPException(400, "请提供 file_path")
         try:
-            extracted = extract_from_workflow_file(body.file_path)
+            # D1：file_path 必须落在白名单目录内（应用自带工作流目录 / 该节点 Comfy 用户目录），
+            # 拒绝绝对路径与目录跳出，防止读取任意本地文件。
+            from pathlib import Path as _Path
+
+            from app.core.config import settings as _settings
+            from app.services.comfy_workflow_sync import resolve_workflow_file_in_allowlist
+
+            _allow_dirs = [_Path(_settings.workflows_dir)]
+            _comfy_user_dir = ms.get("comfy_user_dir")
+            if _comfy_user_dir:
+                _allow_dirs.append(_Path(_comfy_user_dir))
+            _safe_path = resolve_workflow_file_in_allowlist(body.file_path, _allow_dirs)
+            extracted = extract_from_workflow_file(_safe_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, f"读取工作流失败: {exc}") from exc
         if not extracted.get("ok"):
