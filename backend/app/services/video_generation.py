@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -657,6 +658,7 @@ async def submit_video_generation(
     extra: str | None = None,
     use_prev_last_frame: bool = True,
     quality_mode: str = VIDEO_QUALITY_FINAL,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> VideoGeneration:
     sb = db.get(Storyboard, storyboard_id)
     if sb is None or sb.deleted_at is not None:
@@ -890,9 +892,11 @@ async def submit_video_generation(
         "width": width,
         "height": height,
     }
-    # 新签名支持 reference_images；旧节点忽略
+    # 新签名支持 reference_images / cancel_check；旧节点忽略
     try:
-        result = await node.text2video(**t2v_kwargs, reference_images=ref_urls or None)
+        result = await node.text2video(
+            **t2v_kwargs, reference_images=ref_urls or None, cancel_check=cancel_check
+        )
     except TypeError:
         result = await node.text2video(**t2v_kwargs)
     status = result.status

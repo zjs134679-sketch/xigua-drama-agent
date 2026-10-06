@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
@@ -119,14 +120,20 @@ class BaseAgent:
             return json.dumps({"error": str(exc)})
 
     async def run(self, user_input: str, context: list[dict] | None = None) -> dict:
-        """非流式多轮运行，返回 {content, messages, tool_calls}。"""
+        """非流式多轮运行，返回 {content, messages, tool_calls, truncated, error}。
+
+        若耗尽 max_turns 仍未收敛（phase != "done"），返回 truncated=True + error，
+        不再静默返回空 content。
+        """
         messages = (context or []) + self._build_messages(user_input)
         state = AgentRunState(messages=messages)
 
         for _ in range(self.max_turns):
             tools_openai = [t.to_openai() for t in self.tools.values()] if self.tools else None
             base_url, api_key, model = self.llm_config
-            result = chat(
+            # B5: chat() 是同步阻塞调用，扔进线程池，避免卡住事件循环
+            result = await asyncio.to_thread(
+                chat,
                 messages=state.messages,
                 base_url=base_url,
                 api_key=api_key,
@@ -153,10 +160,13 @@ class BaseAgent:
             state.phase = "done"
             break
 
+        truncated = state.phase != "done"
         return {
             "content": state.final_content,
             "messages": state.messages,
             "tool_calls": state.tool_calls,
+            "truncated": truncated,
+            "error": f"超出最大轮次 ({self.max_turns})，模型未收敛" if truncated else None,
         }
 
     async def run_stream(
@@ -264,65 +274,111 @@ class OrchestratedAgent(BaseAgent):
         self.execute_prompt = execute_prompt
         self.supervise_prompt = supervise_prompt
 
+    @staticmethod
+    def _openai_tool_call(tc: dict) -> dict:
+        """把 chat_stream 的 tool_call chunk 转成 OpenAI messages 需要的 tool_calls 条目。"""
+        fn = tc.get("function", {}) or {}
+        return {
+            "id": tc.get("id", ""),
+            "type": "function",
+            "function": {
+                "name": fn.get("name", ""),
+                "arguments": fn.get("arguments", ""),
+            },
+        }
+
     async def run_stream(
         self, user_input: str, context: list[dict] | None = None
     ) -> AsyncGenerator[dict, None]:
-        messages = context.copy() if context else []
-        base_url, api_key, model = self.llm_config
+        """三层 run_stream：decide → execute（含工具结果回灌）→ supervise。
 
-        # Phase 1: Decide
-        yield {"type": "phase", "phase": "decide"}
-        plan_content = ""
-        async for chunk in chat_stream(
-            messages=[{"role": "system", "content": self.decide_prompt}, {"role": "user", "content": user_input}],
-            base_url=base_url, api_key=api_key, model=model, temperature=self.temperature,
-        ):
-            if chunk["type"] == "text":
-                plan_content += chunk["content"]
-                yield {"type": "text", "content": chunk["content"]}
-            elif chunk["type"] == "done":
-                pass
+        Phase 2 执行工具后，结果会回灌进消息历史并再跑一轮 LLM，让模型看到工具返回；
+        全程异常收敛为 {"type": "error"} chunk（与基类对齐），不再直接上浮为 API 500。
+        """
+        try:
+            messages = context.copy() if context else []
+            base_url, api_key, model = self.llm_config
 
-        # Phase 2: Execute
-        yield {"type": "phase", "phase": "execute"}
-        tools_openai = [t.to_openai() for t in self.tools.values()] if self.tools else None
-        exec_msgs = [
-            {"role": "system", "content": self.execute_prompt},
-            {"role": "user", "content": f"需求：{user_input}\n\n执行计划：{plan_content}"},
-        ]
-        exec_content = ""
-        tool_calls_done: list[dict] = []
-        async for chunk in chat_stream(
-            messages=exec_msgs, base_url=base_url, api_key=api_key, model=model,
-            temperature=self.temperature, tools=tools_openai,
-        ):
-            if chunk["type"] == "text":
-                exec_content += chunk["content"]
-                yield {"type": "text", "content": chunk["content"]}
-            elif chunk["type"] == "tool_call":
-                tool_calls_done.append(chunk)
-                yield chunk
-            elif chunk["type"] == "done":
-                pass
+            # Phase 1: Decide
+            yield {"type": "phase", "phase": "decide"}
+            plan_content = ""
+            async for chunk in chat_stream(
+                messages=[{"role": "system", "content": self.decide_prompt}, {"role": "user", "content": user_input}],
+                base_url=base_url, api_key=api_key, model=model, temperature=self.temperature,
+            ):
+                if chunk["type"] == "text":
+                    plan_content += chunk["content"]
+                    yield {"type": "text", "content": chunk["content"]}
+                elif chunk["type"] == "done":
+                    pass
 
-        for tc in tool_calls_done:
-            result = self._execute_tool(tc)
-            yield {"type": "tool_result", "name": tc["function"]["name"], "result": result}
+            # Phase 2: Execute
+            yield {"type": "phase", "phase": "execute"}
+            tools_openai = [t.to_openai() for t in self.tools.values()] if self.tools else None
+            exec_msgs = [
+                {"role": "system", "content": self.execute_prompt},
+                {"role": "user", "content": f"需求：{user_input}\n\n执行计划：{plan_content}"},
+            ]
+            exec_content = ""
+            tool_calls_done: list[dict] = []
+            async for chunk in chat_stream(
+                messages=exec_msgs, base_url=base_url, api_key=api_key, model=model,
+                temperature=self.temperature, tools=tools_openai,
+            ):
+                if chunk["type"] == "text":
+                    exec_content += chunk["content"]
+                    yield {"type": "text", "content": chunk["content"]}
+                elif chunk["type"] == "tool_call":
+                    tool_calls_done.append(chunk)
+                    yield chunk
+                elif chunk["type"] == "done":
+                    pass
 
-        # Phase 3: Supervise
-        yield {"type": "phase", "phase": "supervise"}
-        supervise_content = ""
-        async for chunk in chat_stream(
-            messages=[
-                {"role": "system", "content": self.supervise_prompt},
-                {"role": "user", "content": f"执行结果：\n{exec_content}"},
-            ],
-            base_url=base_url, api_key=api_key, model=model, temperature=0.3,
-        ):
-            if chunk["type"] == "text":
-                supervise_content += chunk["content"]
-                yield {"type": "text", "content": chunk["content"]}
-            elif chunk["type"] == "done":
-                pass
+            if tool_calls_done:
+                # 回灌：assistant tool_calls 消息 + tool 结果消息，再跑一轮让模型看到工具返回
+                exec_msgs.append({
+                    "role": "assistant",
+                    "content": exec_content or None,
+                    "tool_calls": [self._openai_tool_call(tc) for tc in tool_calls_done],
+                })
+                for tc in tool_calls_done:
+                    result = self._execute_tool(tc)
+                    yield {"type": "tool_result", "name": tc["function"]["name"], "result": result}
+                    exec_msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "content": result,
+                    })
+                followup = ""
+                async for chunk in chat_stream(
+                    messages=exec_msgs, base_url=base_url, api_key=api_key,
+                    model=model, temperature=self.temperature,
+                ):
+                    if chunk["type"] == "text":
+                        followup += chunk["content"]
+                        yield {"type": "text", "content": chunk["content"]}
+                    elif chunk["type"] == "done":
+                        pass
+                if followup.strip():
+                    exec_content = (exec_content + "\n" + followup).strip() if exec_content else followup
+                    exec_msgs.append({"role": "assistant", "content": followup})
 
-        yield {"type": "done", "content": supervise_content or exec_content, "messages": messages}
+            # Phase 3: Supervise
+            yield {"type": "phase", "phase": "supervise"}
+            supervise_content = ""
+            async for chunk in chat_stream(
+                messages=[
+                    {"role": "system", "content": self.supervise_prompt},
+                    {"role": "user", "content": f"执行结果：\n{exec_content}"},
+                ],
+                base_url=base_url, api_key=api_key, model=model, temperature=0.3,
+            ):
+                if chunk["type"] == "text":
+                    supervise_content += chunk["content"]
+                    yield {"type": "text", "content": chunk["content"]}
+                elif chunk["type"] == "done":
+                    pass
+
+            yield {"type": "done", "content": supervise_content or exec_content, "messages": exec_msgs}
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "message": str(exc)}

@@ -10,6 +10,15 @@ from app.models.domain import ProductionJob
 from app.services.jobs.queue import finish_job, update_progress
 
 
+def _job_cancelled(db: Session, job: ProductionJob) -> bool:
+    """供 Comfy 轮询循环调用的取消检查：刷新后判断 cancel_requested。"""
+    try:
+        db.refresh(job)
+    except Exception:  # noqa: BLE001
+        pass
+    return bool(job.cancel_requested)
+
+
 async def handle_job(db: Session, job: ProductionJob, payload: dict[str, Any]) -> None:
     jtype = job.job_type
     if jtype == "video_generate":
@@ -53,7 +62,14 @@ async def _video_generate(db: Session, job: ProductionJob, payload: dict) -> Non
             extra=payload.get("extra"),
             use_prev_last_frame=bool(payload.get("use_prev_last_frame", True)),
             quality_mode=payload.get("quality_mode") or "final",
+            # C1: Comfy 轮询中定期检查取消，取消时 POST /interrupt 中断远端任务
+            cancel_check=lambda: _job_cancelled(db, job),
         )
+        # 可中断点：提交返回后再次确认，避免取消与完成竞态
+        db.refresh(job)
+        if job.cancel_requested:
+            finish_job(db, job, status="cancelled", message="已取消")
+            return
         if gen.status != "completed":
             finish_job(
                 db,
@@ -119,6 +135,8 @@ async def _video_batch(db: Session, job: ProductionJob, payload: dict) -> None:
                 resolution=payload.get("resolution"),
                 use_prev_last_frame=bool(payload.get("use_prev_last_frame", True)),
                 quality_mode=payload.get("quality_mode") or "final",
+                # C1: Comfy 轮询中定期检查取消，取消时 POST /interrupt 中断远端任务
+                cancel_check=lambda: _job_cancelled(db, job),
             )
             results.append(
                 {

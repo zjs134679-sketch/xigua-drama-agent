@@ -70,6 +70,9 @@ async def api_extract(body: ExtractBody, db: Session = Depends(get_db)):
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        # LLM 调用失败（超时/429/5xx 等）不再静默吞掉，转 502
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.post("/adapt")

@@ -210,11 +210,14 @@ async def _run_job(job_id: int) -> None:
         except json.JSONDecodeError:
             payload = {}
 
+        # C2: 按"是否真实调用 Comfy/云重任务"划分名单。
+        # - export_timeline 是纯 ffmpeg 合成，不走 Comfy，不加锁；
+        # - easy_pipeline 内部会出视频，必须加锁；
+        # - image_generate 暂无 handler 实现（入队即 failed），不加锁，实现后再加。
         needs_comfy = job.job_type in (
             "video_generate",
             "video_batch",
-            "image_generate",
-            "export_timeline",
+            "easy_pipeline",
         )
         try:
             if needs_comfy:
@@ -232,6 +235,24 @@ async def _run_job(job_id: int) -> None:
             job.completed_at = datetime.utcnow()
             db.commit()
             logger.warning("任务 %s 失败: %s", job_id, msg)
+        finally:
+            # C4: BaseException（如 worker 停止时的 CancelledError）不会被 except 捕获，
+            # 这里兜底收尾，避免任务永久卡在 running
+            try:
+                db.refresh(job)
+            except Exception:  # noqa: BLE001
+                pass
+            else:
+                if job.status == "running":
+                    job.status = "failed"
+                    job.error_msg = "任务被中断（worker 停止或服务重启）"
+                    job.message = job.error_msg
+                    job.progress = 100
+                    job.completed_at = datetime.utcnow()
+                    try:
+                        db.commit()
+                    except Exception:  # noqa: BLE001
+                        db.rollback()
 
 
 async def _dispatch(db: Session, job: ProductionJob, payload: dict) -> None:

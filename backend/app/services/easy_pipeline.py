@@ -414,6 +414,15 @@ async def run_easy_pipeline(
     ]
     _progress(progress, 72, f"出视频 0/{len(need_vid)}…")
     vid_ok = vid_fail = 0
+
+    def _poll_cancelled() -> bool:
+        # C1: 供 Comfy 轮询循环调用，刷新后判断是否取消
+        try:
+            db.refresh(job)
+        except Exception:  # noqa: BLE001
+            pass
+        return _cancelled(job)
+
     for i, sb in enumerate(need_vid):
         if check_cancel():
             return result
@@ -425,6 +434,7 @@ async def run_easy_pipeline(
                 username=username,
                 quality_mode="final",
                 use_prev_last_frame=True,
+                cancel_check=_poll_cancelled,
             )
             if gen.status == "completed" and gen.video_url:
                 vid_ok += 1
