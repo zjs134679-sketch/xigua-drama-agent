@@ -46,7 +46,12 @@ async def agent_chat(body: AgentChatRequest, db: Session = Depends(get_db)):
         temperature=body.temperature,
     )
     result = await agent.run(body.message, context=body.context)
-    return {"content": result["content"], "messages": result["messages"]}
+    return {
+        "content": result["content"],
+        "messages": result["messages"],
+        "truncated": result.get("truncated", False),
+        "error": result.get("error"),
+    }
 
 
 @router.post("/chat/stream")

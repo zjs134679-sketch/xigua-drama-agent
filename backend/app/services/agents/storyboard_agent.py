@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +16,9 @@ from app.services.storyboard_references import match_storyboard_scene, sync_stor
 # 单次 LLM 输出易被截断：按场次分块，每块控制在可完整返回的范围内
 _CHUNK_SOFT_CHARS = 1400
 _MAX_OUTPUT_TOKENS = 8192
+# 单块失败后的单独重试次数（指数退避 2s、4s）；client.chat 本身已有 429/5xx 重试，
+# 这里主要兜底 JSON 截断等单块偶发失败，避免整单 token 作废
+_CHUNK_MAX_RETRIES = 2
 
 _OUTPUT_SPEC = (
     "\n\n把用户剧本拆成分镜清单。所有提示词字段必须使用中文，不要输出英文提示词。**只输出 JSON**，格式："
@@ -234,17 +238,33 @@ def break_storyboards(
 
     all_shots: list[dict] = []
     for index, chunk in enumerate(chunks, start=1):
-        shots = _break_one_chunk(
-            chunk,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            skill=skill,
-            temperature=temperature,
-            chunk_index=index,
-            chunk_total=len(chunks),
-            style_prefix=style_prefix,
-        )
+        shots: list[dict] | None = None
+        last_err: Exception | None = None
+        # 失败分块单独重试：之前成功的块不受影响，不再整单作废
+        for attempt in range(1 + _CHUNK_MAX_RETRIES):
+            try:
+                shots = _break_one_chunk(
+                    chunk,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    skill=skill,
+                    temperature=temperature,
+                    chunk_index=index,
+                    chunk_total=len(chunks),
+                    style_prefix=style_prefix,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - 429/5xx/超时/截断都值得再试
+                last_err = exc
+                if attempt < _CHUNK_MAX_RETRIES:
+                    time.sleep(2.0 * (2**attempt))
+        if shots is None:
+            raise ValueError(
+                f"分镜生成失败：第 {index}/{len(chunks)} 块在"
+                f" {1 + _CHUNK_MAX_RETRIES} 次尝试后仍失败"
+                f"（已成功 {index - 1} 块）：{last_err}"
+            )
         all_shots.extend(shots)
 
     # 全局重编号，避免分块后 number 冲突
