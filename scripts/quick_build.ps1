@@ -1,6 +1,7 @@
 $ErrorActionPreference="Stop"
-$out="E:\xigua-drama-agent\anzhuangbao"
-$rel="E:\xigua-drama-agent\release"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$out = Join-Path $repoRoot "anzhuangbao"
+$rel = Join-Path $repoRoot "release"
 $ver="0.1.2"
 
 Write-Host "=== 西瓜短剧Agent 安装包构建 ===" -ForegroundColor Cyan
@@ -143,7 +144,7 @@ Write-Host "[3/4] Launcher generated"
 
 # 5. Build Inno Setup EXE
 Write-Host "[4/4] Compiling EXE..."
-$issSrc = "E:\xigua-drama-agent\installer\xigua-setup-protected.iss"
+$issSrc = Join-Path $repoRoot "installer\xigua-setup-protected.iss"
 $issContent = (Get-Content $issSrc -Raw) -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion ""$ver"""
 $issTmp = "$out\_setup.iss"
 Set-Content $issTmp $issContent -Encoding UTF8

@@ -21,12 +21,8 @@ def load_auth_app(tmp_db: Path | None = None) -> FastAPI:
     # A5 修复后：auth-server 无有效密钥直接拒绝启动，测试先注入测试密钥
     os.environ.setdefault("XIGUA_AUTH_SECRET", "test-secret")
     os.environ.setdefault("XIGUA_ADMIN_SECRET", "test-admin-secret")
-    # 授权服务已迁至独立卡密平台目录
-    candidates = [
-        Path(r"E:\xigua Agent  密码管理\auth-server\app\main.py"),
-        Path(__file__).resolve().parents[2] / "auth-server" / "app" / "main.py",
-    ]
-    module_path = next((p for p in candidates if p.exists()), candidates[0])
+    # auth-server 位于仓库内：<repo>/auth-server/app/main.py
+    module_path = Path(__file__).resolve().parents[2] / "auth-server" / "app" / "main.py"
     name = f"xigua_auth_server_main_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(name, module_path)
     assert spec is not None and spec.loader is not None
