@@ -23,6 +23,18 @@ def mask_word(word: str | None) -> str:
     return word[0] + "*" * (len(word) - 1)
 
 
+def ticket_username(lic: dict | None) -> str | None:
+    """E1：从 require_valid_license 的返回中取票据身份。
+
+    开发模式（license_enforce 关闭时返回 {"skipped": True}）返回 None，
+    调用方回退为本地逻辑；生产模式下票据身份优先，不再信任请求体自填的 username。
+    """
+    if not isinstance(lic, dict) or lic.get("skipped"):
+        return None
+    name = (lic.get("username") or "").strip()
+    return name or None
+
+
 def _get_or_create_user(db: Session, username: str) -> User:
     user = db.scalars(select(User).where(User.username == username)).first()
     if user is None:
@@ -89,8 +101,17 @@ def sync_banned_state(db: Session, username: str | None) -> dict | None:
         return None
 
 
-def record_violation(db: Session, username: str | None, result: FilterResult, source: str = "image_prompt") -> dict:
-    username = username or "local"
+def record_violation(
+    db: Session,
+    username: str | None,
+    result: FilterResult,
+    source: str = "image_prompt",
+    *,
+    lic: dict | None = None,
+) -> dict:
+    # E1：票据身份优先 —— 生产模式下不再信任请求体自填的 username，
+    # 防止攻击者填他人 username 恶意"举报"致其三振封号。
+    username = ticket_username(lic) or username or "local"
     user = _get_or_create_user(db, username)
     for h in result.hits:
         db.add(

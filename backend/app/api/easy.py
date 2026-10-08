@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
+from app.services.compliance.enforce import ticket_username
 from app.core.db import get_db
 from app.models.domain import Episode
 from app.services.bgm_synth import list_moods
@@ -124,13 +125,15 @@ def easy_bootstrap(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ) -> dict:
-    ensure_active_user(db, body.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(_license) or body.username
+    ensure_active_user(db, username)
     try:
         return bootstrap_from_idea(
             db,
             title=body.title,
             text=body.text,
-            username=body.username,
+            username=username,
             art_style_id=body.art_style_id,
         )
     except PermissionError as exc:
@@ -149,7 +152,9 @@ async def easy_pipeline(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ) -> dict:
-    ensure_active_user(db, body.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(_license) or body.username
+    ensure_active_user(db, username)
     ep = db.get(Episode, body.episode_id)
     if ep is None:
         raise HTTPException(404, "分集不存在")
@@ -160,7 +165,7 @@ async def easy_pipeline(
             job_type="easy_pipeline",
             payload={
                 "episode_id": body.episode_id,
-                "username": body.username,
+                "username": username,
                 "skip_existing": body.skip_existing,
                 "do_export": body.do_export,
                 "transition": body.transition,
@@ -169,7 +174,7 @@ async def easy_pipeline(
             },
             drama_id=ep.drama_id,
             episode_id=ep.id,
-            username=body.username,
+            username=username,
             message="一键出片流水线",
         )
         return {"async": True, "status": "pending", "job": job_view(job)}
@@ -177,7 +182,7 @@ async def easy_pipeline(
     result = await run_easy_pipeline(
         db,
         episode_id=body.episode_id,
-        username=body.username,
+        username=username,
         skip_existing=body.skip_existing,
         do_export=body.do_export,
         transition=body.transition,

@@ -32,11 +32,33 @@ from app.api.timeline import router as timeline_router
 from app.api.vendors import router as vendors_router
 from app.api.video import router as video_router
 from app.core.config import settings
-from app.core.db import init_db
+from app.core.db import SessionLocal, init_db
 from app.core.logging import logger, setup_logging
+from app.models.domain import ProductionJob
 from app.services.compliance import dictionary
 from app.services.compliance.sync import sync_dictionary
 from app.services.jobs import start_worker, stop_worker
+
+from sqlalchemy import select
+from datetime import datetime
+
+
+def _reset_stale_jobs() -> None:
+    """C4: 启动时把上次崩溃/重启遗留的 running 任务标记为失败，避免前端永久显示"执行中"。"""
+    try:
+        with SessionLocal() as db:
+            stale = db.scalars(select(ProductionJob).where(ProductionJob.status == "running")).all()
+            for job in stale:
+                job.status = "failed"
+                job.error_msg = "服务重启中断"
+                job.message = "服务重启中断"
+                job.progress = 100
+                job.completed_at = datetime.utcnow()
+            db.commit()
+        if stale:
+            logger.info("重置遗留 running 任务 %d 个", len(stale))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("重置遗留任务失败: %s", exc)
 
 
 @asynccontextmanager
@@ -45,6 +67,7 @@ async def lifespan(app: FastAPI):
     init_db()
     dictionary.load()
     sync_dictionary()
+    _reset_stale_jobs()
     start_worker()
     logger.info("启动完成 | 词库 %s | 任务队列 worker 已开", dictionary.stats())
     yield

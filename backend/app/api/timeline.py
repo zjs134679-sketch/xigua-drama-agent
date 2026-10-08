@@ -17,7 +17,8 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.models.domain import Asset, Episode, Storyboard, VideoMerge
 from app.services.compliance import check
-from app.services.compliance.enforce import record_violation
+from app.services.compliance.enforce import record_violation, ticket_username
+from app.services.license_gate import require_valid_license
 from app.services.video_compose import FfmpegNotFoundError, VideoComposeError, compose_video
 
 router = APIRouter(prefix="/timeline", tags=["timeline"])
@@ -638,8 +639,10 @@ def export_timeline(
     episode_id: int,
     body: ExportRequest | None = None,
     db: Session = Depends(get_db),
+    lic: dict = Depends(require_valid_license),
 ):
-    username = body.username if body else None
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(lic) or (body.username if body else None)
     ensure_active_user(db, username)
     if body and body.async_mode:
         from app.services.jobs import enqueue_job, job_view

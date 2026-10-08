@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.user_state import ensure_active_user
+from app.services.compliance.enforce import ticket_username
 from app.core.db import get_db
 from app.services.license_gate import require_valid_license
 from app.services.video_generation import (
@@ -102,7 +103,9 @@ async def generate_video(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ):
-    ensure_active_user(db, body.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(_license) or body.username
+    ensure_active_user(db, username)
     if body.async_mode:
         from app.models.domain import Storyboard
         from app.services.jobs import enqueue_job, job_view
@@ -117,7 +120,7 @@ async def generate_video(
                 "model": body.model,
                 "reference_mode": body.reference_mode,
                 "node_id": body.node_id,
-                "username": body.username,
+                "username": username,
                 "duration": body.duration,
                 "resolution": body.resolution,
                 "extra": body.extra,
@@ -127,7 +130,7 @@ async def generate_video(
             drama_id=None,
             episode_id=sb.episode_id if sb else None,
             storyboard_id=body.storyboard_id,
-            username=body.username,
+            username=username,
             message=f"出视频 {body.quality_mode}",
         )
         return {"async": True, "job": job_view(job), "status": "pending"}
@@ -139,7 +142,7 @@ async def generate_video(
             model=body.model,
             reference_mode=body.reference_mode,
             node_id=body.node_id,
-            username=body.username,
+            username=username,
             duration=body.duration,
             resolution=body.resolution,
             extra=body.extra,
@@ -189,8 +192,14 @@ async def generate_video(
 
 
 @router.post("/batch-generate")
-async def batch_generate_video(body: BatchVideoGenBody, db: Session = Depends(get_db)):
-    ensure_active_user(db, body.username)
+async def batch_generate_video(
+    body: BatchVideoGenBody,
+    db: Session = Depends(get_db),
+    _license: dict = Depends(require_valid_license),
+):
+    # E1：身份取自票据，不再信任请求体自填的 username
+    username = ticket_username(_license) or body.username
+    ensure_active_user(db, username)
     if body.async_mode:
         from app.services.jobs import enqueue_job, job_view
 
@@ -202,13 +211,13 @@ async def batch_generate_video(body: BatchVideoGenBody, db: Session = Depends(ge
                 "model": body.model,
                 "reference_mode": body.reference_mode,
                 "node_id": body.node_id,
-                "username": body.username,
+                "username": username,
                 "duration": body.duration,
                 "resolution": body.resolution,
                 "use_prev_last_frame": body.use_prev_last_frame,
                 "quality_mode": body.quality_mode,
             },
-            username=body.username,
+            username=username,
             message=f"批量出视频 {body.quality_mode} ×{len(body.storyboard_ids)}",
         )
         return {"async": True, "job": job_view(job), "quality_mode": body.quality_mode}
@@ -218,7 +227,7 @@ async def batch_generate_video(body: BatchVideoGenBody, db: Session = Depends(ge
         model=body.model,
         reference_mode=body.reference_mode,
         node_id=body.node_id,
-        username=body.username,
+        username=username,
         duration=body.duration,
         resolution=body.resolution,
         use_prev_last_frame=body.use_prev_last_frame,

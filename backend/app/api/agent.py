@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -46,11 +46,16 @@ async def agent_chat(body: AgentChatRequest, db: Session = Depends(get_db)):
         temperature=body.temperature,
     )
     result = await agent.run(body.message, context=body.context)
-    return {"content": result["content"], "messages": result["messages"]}
+    return {
+        "content": result["content"],
+        "messages": result["messages"],
+        "truncated": result.get("truncated", False),
+        "error": result.get("error"),
+    }
 
 
 @router.post("/chat/stream")
-async def agent_chat_stream(body: AgentChatRequest, db: Session = Depends(get_db)):
+async def agent_chat_stream(body: AgentChatRequest, request: Request, db: Session = Depends(get_db)):
     """SSE 流式 Agent 对话。"""
     if body.skill_name:
         system_prompt = BaseAgent.load_skill(body.skill_name)
@@ -67,7 +72,10 @@ async def agent_chat_stream(body: AgentChatRequest, db: Session = Depends(get_db
     )
 
     async def generate():
-        async for chunk in agent.run_stream(body.message, context=body.context):
+        # 二-2：客户端断开（关闭页面）后停止生成，避免后端继续烧 token
+        async for chunk in agent.run_stream(
+            body.message, context=body.context, stop_check=request.is_disconnected
+        ):
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlencode, urlparse
@@ -21,6 +22,7 @@ import httpx
 from app.core.config import settings
 from app.core.logging import logger
 from app.services.compute.base import ComputeNode, ImageJob, JobResult
+from app.services.compute.reference_guard import host_is_public
 
 
 class LocalComfyNode(ComputeNode):
@@ -41,6 +43,16 @@ class LocalComfyNode(ComputeNode):
                 r = await c.get(f"{self.base_url}/system_stats", headers=self._headers())
                 return r.status_code == 200
         except Exception:
+            return False
+
+    async def interrupt(self) -> bool:
+        """POST ComfyUI /interrupt，尽力中断远端正在执行的任务（任务取消时调用）。"""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                r = await c.post(f"{self.base_url}/interrupt", headers=self._headers())
+                return r.status_code < 400
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ComfyUI /interrupt 失败: %s", exc)
             return False
 
     # 已废弃工作流名 → 当前唯一启用的 Turbo 模板
@@ -505,6 +517,9 @@ class LocalComfyNode(ComputeNode):
     ) -> tuple[str, bytes, str]:
         parsed = urlparse(source)
         if parsed.scheme in {"http", "https"}:
+            # D2：后端直接抓取 URL，禁止内网段/回环/云元数据地址（SSRF）
+            if not host_is_public(parsed.hostname or ""):
+                raise ValueError("参考图 URL 必须为公网地址（禁止内网、回环与云元数据地址）")
             response = await client.get(source)
             response.raise_for_status()
             filename = Path(unquote(parsed.path)).name or f"{uuid.uuid4().hex}.png"
@@ -523,7 +538,9 @@ class LocalComfyNode(ComputeNode):
             except ValueError as exc:
                 raise ValueError("非法的 OSS 素材路径") from exc
         else:
-            path = Path(source).expanduser()
+            # D2：不再允许任意本地路径（原来 Path(source).expanduser() 可读任意文件）。
+            # 参考图只允许 /oss/<...>（上分支已做 relative_to 目录约束）或公网 http(s)。
+            raise ValueError("参考图只允许 /oss/<文件名> 或公网 http(s) URL，不接受本地路径")
         if not path.is_file():
             raise FileNotFoundError(f"参考图文件不存在: {self._reference_label(source)}")
         return path.name, path.read_bytes(), mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -699,7 +716,7 @@ class LocalComfyNode(ComputeNode):
             return f"ComfyUI 执行失败（{workflow}）: " + "；".join(messages[:4])
         return f"ComfyUI 执行出错（工作流 {workflow}）"
 
-    async def text2image(self, job: ImageJob) -> JobResult:
+    async def text2image(self, job: ImageJob, cancel_check: Callable[[], bool] | None = None) -> JobResult:
         try:
             workflow = self._workflow_for_job(job, self.model_settings)
             wf = self._load_workflow(workflow)
@@ -740,6 +757,14 @@ class LocalComfyNode(ComputeNode):
 
                 deadline = time.time() + 900
                 while time.time() < deadline:
+                    if cancel_check is not None and cancel_check():
+                        # 用户取消：尽力中断远端任务，不再占着 GPU
+                        await self.interrupt()
+                        return JobResult(
+                            "failed",
+                            error="用户取消",
+                            meta={"cancelled": True, "prompt_id": prompt_id, "workflow": workflow},
+                        )
                     hr = await c.get(f"{self.base_url}/history/{prompt_id}", headers=self._headers())
                     data = hr.json()
                     if prompt_id in data:
@@ -1059,8 +1084,12 @@ class LocalComfyNode(ComputeNode):
         height: int | None = None,
         negative: str | None = None,
         reference_images: list[str] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> JobResult:
-        """多参考图 / 单图 → 视频：上传参考、注入提示词（含台词语音）/时长/种子、轮询下载。"""
+        """多参考图 / 单图 → 视频：上传参考、注入提示词（含台词语音）/时长/种子、轮询下载。
+
+        cancel_check: 轮询中定期调用的取消检查，返回 True 时 POST /interrupt 并提前返回。
+        """
         # 节点 model_settings 优先覆盖 i2v/r2v；旧名一律归一到 Turbo r2v
         ms = getattr(self, "model_settings", None) or {}
         if isinstance(ms, dict):
@@ -1139,6 +1168,14 @@ class LocalComfyNode(ComputeNode):
 
                 deadline = time.time() + 1800
                 while time.time() < deadline:
+                    if cancel_check is not None and cancel_check():
+                        # 用户取消：尽力中断远端任务，不再占着 GPU/显存
+                        await self.interrupt()
+                        return JobResult(
+                            "failed",
+                            error="用户取消",
+                            meta={"cancelled": True, "prompt_id": prompt_id},
+                        )
                     hr = await c.get(f"{self.base_url}/history/{prompt_id}", headers=self._headers())
                     data = hr.json()
                     if prompt_id in data:

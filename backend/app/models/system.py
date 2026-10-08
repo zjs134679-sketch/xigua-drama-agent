@@ -7,6 +7,7 @@ from sqlalchemy import Boolean, DateTime, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
+from app.core.secrets import EncryptedText
 from app.models.mixins import TimestampMixin
 
 
@@ -48,9 +49,9 @@ class ComputeNode(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)  # local_comfy / remote_comfy / cloud_api
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
-    token: Mapped[str | None] = mapped_column(Text)  # 远程主机鉴权
+    token: Mapped[str | None] = mapped_column(EncryptedText)  # 二-20：落盘 Fernet 加密；远程主机鉴权
     provider: Mapped[str | None] = mapped_column(Text)  # wan / seedance / 后续云厂商
-    api_key: Mapped[str | None] = mapped_column(Text)  # 云 API 鉴权，仅后端存储
+    api_key: Mapped[str | None] = mapped_column(EncryptedText)  # 二-20：落盘 Fernet 加密；云 API 鉴权，仅后端存储
     model: Mapped[str | None] = mapped_column(Text)  # 云模型，可覆盖 provider 默认值
     priority: Mapped[int] = mapped_column(Integer, default=100)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

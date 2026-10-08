@@ -33,8 +33,10 @@ def _block(
     result: FilterResult,
     source: str,
     message: str,
+    lic: dict | None = None,
 ) -> None:
-    enforcement = enforce.record_violation(db, username, result, source)
+    # E1：record_violation 内部票据身份优先，此处透传 lic
+    enforcement = enforce.record_violation(db, username, result, source, lic=lic)
     raise HTTPException(
         status_code=451,
         detail={
@@ -54,7 +56,8 @@ def run_extract(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ) -> dict:
-    ensure_active_user(db, req.username)
+    # E1：身份取自票据，不再信任请求体自填的 username
+    ensure_active_user(db, enforce.ticket_username(_license) or req.username)
     ep = db.get(Episode, req.episode_id)
     if not ep:
         raise HTTPException(404, "分集不存在")
@@ -64,7 +67,7 @@ def run_extract(
 
     input_result = check(content)
     if input_result.blocked:
-        _block(db, req.username, input_result, "extract_input", "内容触发红线，已拦截并记录")
+        _block(db, req.username, input_result, "extract_input", "内容触发红线，已拦截并记录", lic=_license)
 
     try:
         extracted = extract(db, content, drama_id=ep.drama_id)
@@ -77,7 +80,7 @@ def run_extract(
 
     output_result = check(json.dumps(extracted, ensure_ascii=False))
     if output_result.blocked:
-        _block(db, req.username, output_result, "extract_output", "提取结果触发红线，已拦截并记录")
+        _block(db, req.username, output_result, "extract_output", "提取结果触发红线，已拦截并记录", lic=_license)
 
     new = save_extracted(db, ep.drama_id, ep.id, extracted)
     return {

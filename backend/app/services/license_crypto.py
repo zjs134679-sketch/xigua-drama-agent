@@ -61,7 +61,8 @@ def verify_capability(
         return None
     token_mid = (payload.get("mid") or "").strip()
     req_mid = (machine_id or "").strip()
-    if token_mid and req_mid and token_mid != req_mid:
+    # A6：token 绑定了机器时，请求没带机器头也拒绝（原来不传头直接跳过检查）
+    if token_mid and token_mid != req_mid:
         return None
     # exp 已由 jwt 校验；再保险
     if int(payload.get("exp") or 0) < int(time.time()):

@@ -140,8 +140,16 @@ def _hits(*results: FilterResult) -> list[dict]:
     return list(unique.values())
 
 
-def _block(db: Session, username: str | None, result: FilterResult, source: str, message: str) -> None:
-    audit = enforce.record_violation(db, username, result, source)
+def _block(
+    db: Session,
+    username: str | None,
+    result: FilterResult,
+    source: str,
+    message: str,
+    lic: dict | None = None,
+) -> None:
+    # E1：record_violation 内部票据身份优先，此处透传 lic
+    audit = enforce.record_violation(db, username, result, source, lic=lic)
     raise HTTPException(
         status_code=451,
         detail={
@@ -247,7 +255,7 @@ def generate_storyboards(
     db: Session = Depends(get_db),
     _license: dict = Depends(require_valid_license),
 ) -> dict:
-    ensure_active_user(db, req.username)
+    ensure_active_user(db, enforce.ticket_username(_license) or req.username)
     ep = db.get(Episode, req.episode_id)
     if not ep:
         raise HTTPException(404, "分集不存在")
@@ -257,7 +265,7 @@ def generate_storyboards(
 
     input_result = check(script)
     if input_result.blocked:
-        _block(db, req.username, input_result, "storyboard_input", "剧本触发红线，已拦截并记录")
+        _block(db, req.username, input_result, "storyboard_input", "剧本触发红线，已拦截并记录", lic=_license)
 
     try:
         shots = break_storyboards(db, script, req.temperature, episode_id=ep.id)
@@ -278,7 +286,7 @@ def generate_storyboards(
 
     output_result = check(json.dumps(shots, ensure_ascii=False))
     if output_result.blocked:
-        _block(db, req.username, output_result, "storyboard_output", "分镜结果触发红线，已拦截并记录")
+        _block(db, req.username, output_result, "storyboard_output", "分镜结果触发红线，已拦截并记录", lic=_license)
 
     count = save_storyboards(db, ep.id, shots)
     rows = db.scalars(
@@ -375,6 +383,15 @@ def update_storyboard(storyboard_id: int, body: StoryboardUpdate, db: Session = 
             raise HTTPException(400, "说话角色不属于当前剧本")
     for field, value in changes.items():
         if field == "reference_images":
+            # D2：参考图只允许 /oss/<文件名> 或公网 http(s) URL，写入前校验格式
+            if value is not None:
+                from app.services.compute.reference_guard import classify_reference_source
+
+                for url in value:
+                    try:
+                        classify_reference_source(url)
+                    except ValueError as exc:
+                        raise HTTPException(400, f"参考图地址非法: {exc}") from exc
             sb.reference_images = None if value is None else json.dumps(value, ensure_ascii=False)
         elif field == "duration":
             sb.duration = _clamp_storyboard_duration(value)

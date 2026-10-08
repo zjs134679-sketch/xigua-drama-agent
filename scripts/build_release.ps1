@@ -152,6 +152,12 @@ XIGUA_AUTH_SERVER_URL=http://127.0.0.1:8100
 XIGUA_CAPABILITY_PUBKEY=$capPub
 "@ | Set-Content -Path (Join-Path $Release "config.env.example") -Encoding UTF8
 
+# E1：生产包断言 —— license_enforce 必须为 true，否则门禁全关。构建直接失败，不静默放行。
+$cfgCheck = Get-Content -Path (Join-Path $Release "config.env.example") -Raw
+if ($cfgCheck -notmatch '(?m)^XIGUA_LICENSE_ENFORCE=true\s*$') {
+    throw "E1 断言失败：config.env.example 的 XIGUA_LICENSE_ENFORCE 不是 true，拒绝打包（生产包必须开启授权门禁）。"
+}
+
 # ---------- 启动器（BAT + VBS，带健康检查） ----------
 Write-Step "写入启动器"
 # ASCII-safe bat: set env, start exe, wait for /health, open browser
